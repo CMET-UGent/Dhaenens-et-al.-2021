@@ -1,0 +1,2272 @@
+---
+title: "Amplicon Sequencing EDA report"
+author: "CMET - Center for Microbial Ecology and Technology"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  bookdown::html_document2: 
+    code_folding: none
+    css: /Projects1/Kim/2020_Verstraelen/raw_data/AmpliMET/dependencies/report_data.css
+    fig_caption: yes
+    highlight: espresso
+    keep_md: yes
+    number_sections: yes
+    theme: united
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+      toc_depth: 2
+editor_options: 
+  chunk_output_type: console
+bibliography: ref.bib
+---
+
+```{r User options,cache=TRUE,warning=FALSE,message=FALSE,echo=FALSE}
+##########################################################################################
+########## Enter the file location of your fastq files below (no trailing slash) #########
+##########################################################################################
+# fldr <- "/Projects1/timNGSjobs/amplidev" # manual directory override
+fldr <- "/Projects1/Kim/2020_Verstraelen/raw_data/AmpliMET" # assumes your project is in the folder where fastq files live
+##########################################################################################
+# Enter the name of your metadata file (or just leave at default if you don't have one) ##
+################ Example can be found in the "examples" folder. ########################## 
+############# Upload it back to the repository folder (yourpath/AmpliMET) ################
+##########################################################################################
+metadatafn <- "meta.xslx" 
+##########################################################################################
+#################### Choose the analysis method (MOTHUR or DADA2) ########################
+##########################################################################################
+analysismethod <- "MOTHUR"  #available methods: DADA2 | MOTHUR
+##########################################################################################
+##########################################################################################
+#################### Remove spurious otu's based on set parameters #######################
+######################## Options: MAX or SUM, with set quantity ##########################
+##################### cropparam SUM cropamnt 1 will remove singletons ####################
+### cropparam MAX cropamnt 5 will keep any otu occuring at least 6 times in one sample ###
+##########################################################################################
+cropparam <- "sum" #options: sum and max
+cropamnt <- 1 # any number you wish to use as crop parameter. Carefull with this!
+##########################################################################################
+dpi <- 600
+phyotu <- 13 # amount of ASVs or OTUs you wish to display in barplots
+targetspecies <- "Bacteria" # what do you want to keep? Can be more than one value.
+if (analysismethod=="MOTHUR") {
+  binname <- "OTU"
+}
+if (analysismethod=="DADA2") {
+  binname <- "ASV"
+}
+#### set output location -------------------------------------------------------
+if(!dir.exists(file.path("REPORT_files"))){
+  dir.create(file.path("REPORT_files"),recursive=TRUE)}
+outputloc <- file.path("REPORT_files")
+```
+
+```{r Loading libraries,cache=FALSE,warning=FALSE,message=FALSE,echo=FALSE}
+library("ggplot2") # plots
+library("cowplot")
+library("ggrepel")
+library("grid")
+library("ggplotify")
+library("phyloseq") # seq data
+library("dplyr") # manipulate data
+library("RColorBrewer") # colors
+library("knitr") # manipulate data
+library("scales") # For log transformation
+library("vegan") # For rarefaction curves
+### used in uncommented sections ###
+# library("DECIPHER") # trees
+# library("phangorn") # trees
+# library("dada2") # trees
+library("readxl") # read metadata
+# library("plyr")
+# library("reshape")
+# library("DESeq2")
+library("iNEXT") #alternative for hill numbers
+# library("tidyverse") # to get facet wraps around iNEXT
+# Command to install bioconductor packages
+### BiocManager::install(c("dada2")) 
+library(data.table)
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(microbiome)
+library(magick)
+library("mixOmics")
+library("RVAideMemoire")
+library(ComplexHeatmap)
+library(circlize)
+
+# Parallel compution
+library("parallel")
+library("doSNOW")
+
+# user defined functions
+source('/Projects1/Kim/2020_Verstraelen/2020_Verstraelen_analysis_Kim/KDP_ggiNEXT_df.R')
+source('/Projects1/Kim/2020_Verstraelen/2020_Verstraelen_analysis_Kim/KDP_papertheme_smallsize.R')
+source('/Projects1/Kim/2020_MyHealth_Sporebiotics/KDP_univar_statistics.R')
+source('/Projects1/Kim/2020_Verstraelen/2020_Verstraelen_analysis_Kim/facet_grid_spanning_labels.R')
+```
+
+```{r Step-Loading-data,cache=TRUE,warning=FALSE,message=FALSE,dpi=dpi,out.width="100%", echo=FALSE}
+if(analysismethod == "DADA2"){
+  print("you are using DADA2")
+tax <- read.csv(paste(fldr,"/DADA2/ASVtax138.csv",sep=""),header = TRUE, row.names = 1)
+tab <- read.csv(paste(fldr,"/DADA2/ASVtable.csv",sep=""),header = TRUE, row.names = 1)
+fas <- read.csv(paste(fldr,"/DADA2/ASVfasta.csv",sep=""),header = TRUE, row.names = 1)
+tra <- read.csv(paste(fldr,"/DADA2/track.csv",sep=""),header = TRUE, row.names = 1)
+} else if (analysismethod == "MOTHUR"){
+  print("you are using MOTHUR")
+tax <- read.csv(paste(fldr,"/MOTHUR/OTUtax138.csv",sep=""),header = TRUE, row.names = 1)
+tab <- read.csv(paste(fldr,"/MOTHUR/OTUtable.csv",sep=""),header = TRUE, row.names = 1)
+fas <- read.csv(paste(fldr,"/MOTHUR/OTUfasta.csv",sep=""),header = TRUE, row.names = 1)
+tra <- read.csv(paste(fldr,"/MOTHUR/track.csv",sep=""),header = TRUE, row.names = 1)
+} else {
+  print("No processing method found! This script needs DADA2 or MOTHUR output. Please correct.")
+}
+# graph colors and set-up
+elevencolors = c("#000000","#CD6600","#36648B","#008B00","#7A378B","#838B83","#8B0000","#323C4D","#A03D44","#98B736","#C8ADA4")
+fifteencolors <- c("#000000","#CD6600","#36648B","#008B00","#7A378B","#838B83","#8B0000","#323C4D","#C9A325","#A03D44","#98B736","#C8ADA4","#BB5236","#7FCD50","#AB5CC7")
+thirtycolors=c("#323F24","#CB51D7","#72E245","#DE4F2D","#81DDC7","#6584C6","#CFAE3C","#914261","#BFDC86","#CDC6BE","#D3469A","#3C315A","#607B30","#DD4469","#5B9072","#CA9FC7","#7F592D","#5A656D","#D1867F","#4C2426","#79B6CE","#6E67D1","#CBDC3F","#63D98B","#97362B","#CBB37D","#7E3F85","#CF8338","#5DA73A","#CB80D0")
+thirtyfourcolors <- c("#323F24","#CB51D7","#72E245","#81DDC7","#6584C6","#DE4F2D","#CFAE3C","#914261","#BFDC86","#CDC6BE","#D3469A","#3C315A","#607B30","#DD4469","#5B9072","#CA9FC7","#7F592D","#5A656D","#D1867F","#4C2426","#79B6CE","#6E67D1","#CBDC3F","#63D98B","#97362B","#CBB37D","#7E3F85","#CF8338","#5DA73A","#CB80D0","#7eb96b","#9366e9","#ffdab9","#7eb96b")
+threecolors= c("#323C4D","#A03D44","#98B736")
+fourcolors = c("darkorange2","#feb24c","#bcbddc","#756bb1") 
+sevencolors = c("#9BD0E3","#DFDA5F","#9FDF9D","#E3B1D2","#E3B573","#6EDFC4","#B2E078")
+Type_2 <- c("darkorange2","#756bb1") 
+FertilityType_4 <- c("#228800","#44bec7","#ffc300","#7a2586")
+Fertility_2 <- c("#cdc0b0","#5f9ea0")
+ID_14 <-  c("#000000","#CD6600","#36648B","#008B00","#7A378B","#838B83","#8B0000","#323C4D","#C9A325","#98B736","#C8ADA4","#BB5236","#7FCD50","#AB5CC7")
+nsamp <- ncol(tab)
+basecol <- colorRampPalette(brewer.pal(11, "Spectral"))(8)
+colorvec=c("#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#46f0f0", "#f032e6", "#bcf60c", "#fabebe","#9E0142","#EE6445","#FA9C58","#FEF0A7","#F3FAAD","#D0EC9C","#98D5A4","#5CB7A9","#3682BA","#5e4fa2","#004692", "#a24f7e")
+mycolors <- tail(colorvec,phyotu)
+mycolors <- c("#ffffff", mycolors)
+
+wid <- 8
+high <- ((as.numeric(nsamp))+1)/2
+if (nsamp > 30) {
+  highknit <- ((as.numeric(nsamp))+1)/6
+} else if (nsamp > 12) {
+  highknit <- ((as.numeric(nsamp))+1)/3.5
+} else if (nsamp > 6) {
+  highknit <- ((as.numeric(nsamp))+1)/2.5
+} else if (nsamp > 3) {
+  highknit <- ((as.numeric(nsamp))+1)/1.5
+} else {
+  highknit <- ((as.numeric(nsamp))+1)
+}
+standknit <- 3
+# Clean up NA from tax table
+tax.clean <- data.frame(tax)
+for (i in 1:6){ tax.clean[,i] <- as.character(tax.clean[,i])}
+tax.clean[is.na(tax.clean)] <- ""
+for (i in 1:nrow(tax.clean)){
+if (tax.clean[i,2] == ""){
+kingdom <- paste("Kingdom_", tax.clean[i,1], sep = "")
+tax.clean[i, 2:6] <- kingdom
+} else if (tax.clean[i,3] == ""){
+phylum <- paste("Phylum_", tax.clean[i,2], sep = "")
+tax.clean[i, 3:6] <- phylum
+} else if (tax.clean[i,4] == ""){
+class <- paste("Class_", tax.clean[i,3], sep = "")
+tax.clean[i, 4:6] <- class
+} else if (tax.clean[i,5] == ""){
+order <- paste("Order_", tax.clean[i,4], sep = "")
+tax.clean[i, 5:6] <- order
+} else if (tax.clean[i,6] == ""){
+family <- paste("Family_", tax.clean[i,5], sep = "")
+tax.clean[i, 6:6] <- family
+}
+}
+tax.clean[3,]$Genus <- "Candidatus Lachnocurva"
+tax.clean$Genus <- mapvalues(tax.clean$Genus,from="Shuttleworthia",to="Candidatus Lachnocurva")
+
+if (file.exists(paste(fldr,"/meta.xlsx",sep=""))){
+print("I found a metadata file and will use it downstream.")
+metadata.tibble <- readxl::read_excel(paste(fldr,"/meta.xlsx",sep=""),sheet="ForR")
+metavars <- colnames(metadata.tibble)[3:ncol(metadata.tibble)]
+metavars <- metavars[metavars != "FC" ]
+varnum <- as.numeric(length(metavars))
+if(ncol(metadata.tibble)==2){
+  varnum <- 0
+}
+metadata <- as.data.frame(metadata.tibble)
+
+# Rename the samples
+colnames(tab) <- plyr::mapvalues(colnames(tab),from=as.character(metadata$Code),to=as.character(metadata$SampleName))
+samplenames <- colnames(tab) # vector of the sample names
+# Check for samples that do not need to be included in the analysis ------------
+metadata.incl <- metadata %>% dplyr::filter(SampleName!="Not_included")
+metadata <- metadata.incl
+} else if (analysismethod == "MOTHUR"){
+  print("I didn't find a metadata file, so I'll create a default one using MOTHUR output")
+varnum <- 0 # there are no variables in case we generate a metadata file
+metadata.tibble <- read.delim("../stability.files", header = FALSE, sep = "\t")
+metadata <- as.data.frame(metadata.tibble$V1)
+colnames(metadata)[1] <- 'SampleName'
+colnames(metadata.tibble)[1] <- 'SampleName'
+} else if (analysismethod == "DADA2"){
+  print("I didn't find a metadata file, so I'll create a default one using DADA2 output")
+varnum <- 0 # there are no variables in case we generate a metadata file
+metadata.tibble <- read.csv("DADA2/track.csv", header = TRUE)
+metadata <- as.data.frame(metadata.tibble$X)
+colnames(metadata)[1] <- 'SampleName'
+colnames(metadata.tibble)[1] <- 'SampleName'
+} else {
+  print("No metadata file found or generated. Please correct!")
+}
+metadata
+metadata$TypeFertility <- paste(metadata$Type,metadata$Fertility,sep="_")
+metadata$IDunique <- mapvalues(metadata$SampleName,from=metadata$SampleName,to=c("BLK","BLK","10","11","1","2","3","12","4","5","6","7","8","13","9","14","BLK","BLK","10","11","1","2","3","12","4","5","6","7","8","13","9","14","BLK","BLK","10","11","1","2","3","12","4","5","6","7","8","13","9","14"))
+metadata$IDunique <- factor(metadata$IDunique,levels=c("BLK","1","2","3","4","5","6","7","8","9","10","11","12","13","14"))
+
+# Add correct sample names to metadata (rownames)
+rownames(metadata) <- metadata$SampleName
+# refseq fasta sequences
+fassub <- as.data.frame(gsub("-", "", fas[,1]))
+seqs = as.character(fassub[,1])
+names(seqs) <- rownames(fas) # This propagates to the tip labels of the tree
+fas.phy <- as(seqs,"DNAStringSet")
+# Create objects for phyloseq
+tab.phy <- phyloseq::otu_table(tab, taxa_are_rows = TRUE)
+tax.phy <- phyloseq::tax_table(as.matrix(tax.clean))
+sam.phy <- phyloseq::sample_data(metadata)
+phylobj <- phyloseq(tab.phy,tax.phy, sam.phy, fas.phy)
+phylobj <- subset_taxa(phylobj, Kingdom %in% targetspecies) # make sure to remove anything non bacterial
+# Remove empty samples
+tab.clean <- data.frame(otu_table(phylobj))
+tab.clean = tab.clean[,colSums(tab.clean) > 0]
+otu_table(phylobj) <- otu_table(tab.clean, taxa_are_rows = TRUE)
+# Remove singletons
+tab.clean.filter <- data.frame(otu_table(phylobj))
+tab.clean.filter$filter <- apply(tab.clean.filter, 1, cropparam) #create col with maximum
+tab.clean.filter <- tab.clean.filter[tab.clean.filter[,ncol(tab.clean.filter)]>cropamnt,]
+tab.filter.phy <- phyloseq::otu_table(tab.clean.filter, taxa_are_rows = TRUE)
+phylobj.filter <- merge_phyloseq(tab.filter.phy, tax_table(phylobj), sample_data(phylobj), refseq(phylobj) )
+phylobj <- phylobj.filter
+
+# Subsetting
+phylobj = subset_samples(phylobj, PCR != "nested")
+phylobj = subset_samples(phylobj, ID != "BLK")
+
+# Filtered output
+rep.tax <- as.data.frame(tax_table(phylobj))
+rep.otu <- as.data.frame(otu_table(phylobj))
+rep.fas <- as.data.frame(refseq(phylobj))
+colnames(rep.fas) <- "Sequence"
+rep <- cbind(rep.tax,rep.otu,rep.fas)
+# Create report at the current stage
+wb <- openxlsx::write.xlsx(x = rep, rowNames = TRUE, file = paste("REPORT_files/", analysismethod,"_REPORT.xlsx",sep=""), sheetName = "absolute_filtered")
+# Add rel abund
+phylobjn_relab <- transform_sample_counts(phylobj, function(otu) otu / sum(otu) )
+# convert
+rep.tax <- as.data.frame(tax_table(phylobjn_relab))
+rep.otu <- as.data.frame(otu_table(phylobjn_relab))
+rep.fas <- as.data.frame(refseq(phylobjn_relab))
+colnames(rep.fas) <- "Sequence"
+rep <- cbind(rep.tax,rep.otu,rep.fas)
+openxlsx::addWorksheet(wb,sheetName = "relative_filtered")
+openxlsx::writeData(wb,sheet="relative_filtered",x=rep, rowNames = TRUE)
+openxlsx::saveWorkbook(wb,file = paste("REPORT_files/", analysismethod,"_REPORT.xlsx",sep=""),overwrite=TRUE)
+```
+
+# Introduction
+
+This report was automatically generated and is intended for you, as a researcher, to develop hypotheses based upon an initial *exploratory data analysis* (EDA).
+
+# Data processing
+
+`r if(analysismethod=="DADA2"){"The DADA2 R package was used to process the amplicon sequence data according to the pipeline tutorial (Callahan et al 2016). In a first quality control step, the primer sequences were removed and reads were truncated at a quality score cut-off (truncQ=2). Besides trimming, additional filtering was performed to eliminate reads containing any ambiguous base calls or reads with high expected errors (maxEE=2,2). After dereplication, unique reads were further denoised using the Divisive Amplicon Denoising Algorithm (DADA) error estimation algorithm and the selfConsist sample inference algorithm (with the option pooling =TRUE). The obtained error rates were inspected and after approval, the denoised reads were merged. Finally, the ASV table obtained after chimera removal was used for taxonomy assignment using the Naive Bayesian Classifier and the DADA2 formatted Silva v138 (Quast et al 2013).
+"}`
+
+`r if(analysismethod=="MOTHUR"){"Read assembly and cleanup was largely derived from the MiSeq SOP described by the Schloss lab (Schloss et al., 2011, Kozich et al., 2013)."}`
+
+
+# Clean-up
+
+Prior to generating this report, an additional clean-up step was implemented. 
+`r if(cropparam=="sum"){"When the total amount of target over all samples was lower or equal to"} else {"When the maximum amount of target in any one of the samples was lower or equal to"}` `r cropamnt`, the `r binname` was removed.
+
+
+```{r Step2-Loading-data,cache=TRUE,warning=FALSE,message=FALSE,dpi=dpi,out.width="100%", echo=FALSE, fig.height=highknit}
+# Basic barplot
+tram <- tra
+if (file.exists(paste(fldr,"/meta.xlsx",sep=""))){
+rownames(tram) <- plyr::mapvalues(rownames(tram),from=as.character(metadata$Code),to=as.character(metadata$SampleName))
+}
+# Get values for the filtering step
+filtersum <- data.frame(otu_table(phylobj))
+filtercolsum <- (data.frame(colSums(filtersum)))
+colnames(filtercolsum)[1] <- paste(binname,"_filtered",sep="")
+tram <- merge(tram, filtercolsum, by="row.names", all=TRUE)
+tram_filter <- tram[- grep("_nest_", tram$Row.names),]
+tram_filter <- tram_filter[- grep("_BLK_", tram$Row.names),]
+
+
+kable(tram_filter, caption = "Sequences retained during each step of the pipeline")
+
+
+openxlsx::addWorksheet(wb,sheetName = "datacount")
+openxlsx::writeData(wb,sheet="datacount",x=tram, rowNames = FALSE)
+openxlsx::saveWorkbook(wb,file = paste("REPORT_files/", analysismethod,"_REPORT.xlsx",sep=""),overwrite=TRUE)
+tram$sample <- tram$Row.names
+tram <- reshape2::melt(tram)
+tram <- tram[- grep("_nest_", tram$sample),]
+tram <- tram[- grep("_BLK_", tram$sample),]
+levels(tram$variable)
+tram.rev <- tram
+tram.rev$variable <- factor(tram.rev$variable, levels = rev(levels(tram.rev$variable)))
+p <- ggplot(tram.rev,aes(y=value,x=sample,fill=factor(variable)))+
+  geom_bar(stat="identity",position="dodge")+
+  xlab("Samples")+ylab("Reads")
+p + coord_flip() + scale_fill_manual(values = basecol) + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.3)) + aes(x = reorder(sample, desc(sample))) + theme_bw() + guides(fill=guide_legend(title="Step")) +labs(x= "Samples")
+```
+
+# Stacked bar plots
+## Genus level
+```{r Step3-Plot-captions-genera,cache=TRUE,warning=FALSE,message=FALSE,dpi=dpi,out.width="100%", echo=FALSE}
+cap1 <- paste("Top ",binname,"s were calculated based on their combined absolute read count across all samples and labeled with their respective genus, all other ",binname,"s were labeled as 'Other'")
+cap2 <- paste("Top ", phyotu, " ",binname,"s were calculated based on their combined relative abundance across all samples and labeled with their respective genus, all other ",binname,"s were labeled as 'Other'")
+cap3 <- paste("Top ", phyotu, "genera were calculated based on their combined absolute read count across all samples and plotted as ",binname,"s, all other genera were labeled as 'Other'")
+cap4 <- paste("Top ", phyotu, "genera were calculated based on their combined relative abundance across all samples and plotted as ",binname,"s, all other genera were labeled as 'Other'")
+#####
+# Function for standard barplot #
+function.barplot.normal <- function(phyloseq.obj,taxlevel,Taxlevel,label,colorpattern=mycolors)
+{
+  phyotu_ori <- phyotu
+  phyotu <- (length (colorpattern)-1)
+  
+  topotus = names(sort(taxa_sums(phyloseq.obj), TRUE)[1:phyotu]) # sort sums of TAXA
+  taxtabn = cbind(tax_table(phyloseq.obj), taxlevelcol = "Other") # Go over all samples 
+  colnames(taxtabn)[ncol(taxtabn)] <- taxlevel #rename col of atomic vector
+  taxtabn[topotus, taxlevel] <- as(tax_table(phyloseq.obj)[topotus, Taxlevel], 
+      "character")
+  tax_table(phyloseq.obj) <- tax_table(taxtabn)
+  
+#### WARNING! The original taxlevel is containing in "Taxlevel" (with capital) while "taxlevel" is the filtered list. 
+  
+  # convert phyloseqobj to DF
+  phylobjndf <- psmelt(phyloseq.obj)
+  
+  # create vector for new order
+  phylobjndf.order <- aggregate(phylobjndf$Abundance, by=list(Category=phylobjndf[ , taxlevel ]), FUN=sum)
+  other <- subset(phylobjndf.order,phylobjndf.order$Category=="Other")
+  otherd <- subset(phylobjndf.order,phylobjndf.order$Category!="Other")
+  phylobjndf.order <- otherd[order(otherd$x),]
+  phylobjndf.order <- rbind(other, phylobjndf.order)
+  order <- factor(dplyr::pull(phylobjndf.order, Category))
+  
+  # order the levels of "order" according to the actual vector order... still following?
+  levels(order)
+  order = factor(order,levels(order)[c(order)])
+  levels(order)
+  
+  # Order levels in dataframe to reflect actual order
+  levels(phylobjndf[ , taxlevel ])
+  phylobjndf[ , taxlevel ] <- factor(phylobjndf[ , taxlevel ], levels = order)
+  levels(phylobjndf[ , taxlevel ])
+  
+  # Reorder samples to match metadata
+  level_samples <- factor(dplyr::pull(phylobjndf, Sample))
+  level_samples_meta <- factor(dplyr::pull(metadata.tibble, SampleName))
+  phylobjndf$Sample <- factor(phylobjndf$Sample, levels = level_samples_meta) # we take rev here as we'll flip the graph later
+  level_samples <- factor(dplyr::pull(phylobjndf, Sample))
+  
+  p <- ggplot(phylobjndf, aes(x=Abundance, y=Sample, fill=phylobjndf[ , taxlevel ]))
+  p <- p  + geom_bar(stat="identity") + geom_col(color = "black", size = 0.1) + scale_fill_manual(values = colorpattern) + labs(title=label) + theme_bw() + guides(fill = guide_legend(reverse = TRUE, ncol=1)) + labs(fill = taxlevel)
+  p <- p + aes(y = reorder(Sample, desc(Sample))) + labs(y = "Samples")
+  phyotu <- phyotu_ori # reset otu count
+  
+  p  
+}
+#####
+# Function for aggregated barplot #
+function.barplot.aggreg <- function(phyloseq.obj,taxlevel,Taxlevel,label,colorpattern=mycolors,relative=TRUE) {
+  
+# We'll first aggregate the data to get a vector of interesting genera
+# create phyloseq object containing "other" from raw data
+phyotu_ori <- phyotu
+phyotu <- (length (colorpattern) - 1)
+
+phyotu.max <- nrow(otu_table(phyloseq.obj)) # make sure the amount here is not lower than phyotu
+if(phyotu.max < phyotu) {
+topotus = names(sort(taxa_sums(phyloseq.obj), TRUE)[1:phyotu.max]) # sort sums of TAXA
+} else
+{
+repeat {
+topotus = names(sort(taxa_sums(phyloseq.obj), TRUE)[1:phyotu]) # sort sums of TAXA
+topcount <- (length (colorpattern) - 1)
+uniquetop <- nrow(unique(tax_table(phyloseq.obj)[topotus, Taxlevel])) # find uniques  
+phyotu.max <- nrow(otu_table(phyloseq.obj))
+allotus = names(sort(taxa_sums(phyloseq.obj), TRUE)[1:phyotu.max])
+uniquetot <- nrow(unique(tax_table(phyloseq.obj)[allotus, Taxlevel])) # find uniques  
+if (uniquetop == topcount){
+break
+} else if (uniquetop == uniquetot) {
+break
+} else {
+phyotu = phyotu+1
+}
+}
+
+} # end else
+
+  taxtabn = cbind(tax_table(phyloseq.obj), taxlevelcol = "Other") # Go over all samples 
+  colnames(taxtabn)[ncol(taxtabn)] <- taxlevel #rename col of atomic vector
+  taxtabn[topotus, taxlevel] <- as(tax_table(phyloseq.obj)[topotus, Taxlevel], 
+      "character")
+  tax_table(phyloseq.obj) <- tax_table(taxtabn)
+  
+  #### WARNING! The original taxlevel is containing in "Taxlevel" (with capital) while "taxlevel" is the filtered list. 
+  
+  # convert phyloseqobj to DF
+  phylobjndf <- psmelt(phyloseq.obj)
+  # create vector for new order
+  phylobjndf.order <- aggregate(phylobjndf$Abundance, by=list(Category=phylobjndf[ , taxlevel ]), FUN=sum)
+  other <- subset(phylobjndf.order,phylobjndf.order$Category=="Other")
+  otherd <- subset(phylobjndf.order,phylobjndf.order$Category!="Other")
+  phylobjndf.order <- otherd[order(otherd$x),]
+  phylobjndf.order <- rbind(other, phylobjndf.order)
+  order <- factor(dplyr::pull(phylobjndf.order, Category))
+  
+  # order the levels of "order" according to the actual vector order
+  levels(order)
+  order = factor(order,levels(order)[c(order)])
+  levels(order)
+
+# Now we will take these levels to change the original ASV table
+## if the plot displays relative taxa
+if(relative == TRUE) {
+  phylobjn_rel <- transform_sample_counts(phylobjn, function(otu) otu / sum(otu) ) 
+  phylobjndf <- psmelt(phylobjn_rel)
+} else {
+  phylobjndf <- psmelt(phylobj)
+}
+  phylobjndf.y <- dplyr::filter(phylobjndf, (!!rlang::sym(Taxlevel)) %in% order) # df which has one of the order vector
+  phylobjndf.y[ , taxlevel ] = phylobjndf.y[ , Taxlevel ] # Copy the Genus column to "genus"
+  phylobjndf.n <- dplyr::filter(phylobjndf, !(!!rlang::sym(Taxlevel)) %in% order) # df which doesn't
+  if (nrow(phylobjndf.n)>0) {
+  phylobjndf.n[ , taxlevel ] <- "Other" # all "others" are named here
+  phylobjndf <- rbind(phylobjndf.y,phylobjndf.n) # merge them back together
+  } else {phylobjndf <- phylobjndf.y}
+
+# Plot it
+
+  # Order levels in dataframe to reflect actual order
+  levels(phylobjndf[ , taxlevel ])
+  phylobjndf[ , taxlevel ] <- factor(phylobjndf[ , taxlevel ], levels = order)
+  levels(phylobjndf[ , taxlevel ])
+
+  # Reorder samples to match metadata
+  level_samples <- factor(dplyr::pull(phylobjndf, Sample))
+  level_samples_meta <- factor(dplyr::pull(metadata.tibble, SampleName))
+  phylobjndf$Sample <- factor(phylobjndf$Sample, levels = level_samples_meta) # we take rev here as we'll flip the graph later
+  level_samples <- factor(dplyr::pull(phylobjndf, Sample))
+  
+  p <- ggplot(phylobjndf, aes(x=Abundance, y=Sample, fill=phylobjndf[ , taxlevel ]))
+  p <- p  + geom_bar(stat="identity") + geom_col(color = "black", size = 0.1) + scale_fill_manual(values = colorpattern) + labs(title=label) + theme_bw() + guides(fill = guide_legend(reverse = TRUE, ncol=1)) + labs(fill = taxlevel)
+  p <- p + aes(y = reorder(Sample, desc(Sample))) + labs(y = "Samples")
+  
+  phyotu <- phyotu_ori
+  
+  p
+
+}
+```
+
+```{r Step3-Stacked-bar-plots-genera,cache=TRUE,warning=FALSE,message=FALSE,dpi=dpi,out.width="100%", fig.height=highknit, fig.cap=c(cap1,cap2,cap3,cap4), echo=FALSE}
+#### Top X OTU/ASV ####
+phylobjn <- phylobj # Take the fresh object
+label <- paste("Absolute read count top ",phyotu," ",binname,"s",sep="")
+u <- function.barplot.normal(phylobjn,"genus","Genus",label)
+u
+#### Top X OTU/ASV relative abundance ####
+phylobjn <- phylobj # Take the fresh object
+phylobjn_relab <- transform_sample_counts(phylobjn, function(otu) otu / sum(otu) )
+label <- paste("Relative read count top ",phyotu," ",binname,"s",sep="")
+u <- function.barplot.normal(phylobjn_relab,"genus","Genus",label)
+u
+#### Top X genera plotted as OTU/ASV ####
+phylobjn <- phylobj # Take the fresh object
+phylobjn.agg <- tax_glom(phylobjn, taxrank=rank_names(phylobjn)[6], NArm=FALSE) # merge on genus
+label <- paste("Absolute read count top ",phyotu," genera as ",binname,"s",sep="")
+u <- function.barplot.aggreg(phylobjn.agg,"genus","Genus",label,relative=FALSE)
+u
+#### Top X genera plotted as OTU/ASV in rel abund ####
+phylobjn <- phylobj # Take the fresh object
+phylobjn.agg_relab <- transform_sample_counts(phylobjn, function(otu) otu / sum(otu) ) 
+phylobjn.agg_relab <- tax_glom(phylobjn.agg_relab, taxrank=rank_names(phylobjn.agg_relab)[6], NArm=FALSE) # merge on genus
+label <- paste("Relative abundance top ",phyotu," genera as ",binname,"s",sep="")
+u <- function.barplot.aggreg(phylobjn.agg_relab,"genus","Genus",label,relative=TRUE)
+u
+```
+## Family level
+```{r Step3-Plot-captions-families,cache=TRUE,warning=FALSE,message=FALSE,dpi=dpi,out.width="100%", echo=FALSE}
+cap1 <- paste("Top ", phyotu, "",binname,"s were calculated based on their combined absolute read count across all samples and labeled with their respective family, all other ",binname,"s were labeled as 'Other'")
+cap2 <- paste("Top ", phyotu, "",binname,"s were calculated based on their combined relative abundance across all samples and labeled with their respective family, all other ",binname,"s were labeled as 'Other'")
+cap3 <- paste("Top ", phyotu, "families were calculated based on their combined absolute read count across all samples and plotted as ",binname,"s, all other families were labeled as 'Other'")
+cap4 <- paste("Top ", phyotu, "families were calculated based on their combined relative abundance across all samples and plotted as ",binname,"s, all other families were labeled as 'Other'")
+```
+
+```{r Step3-Stacked-bar-plots-families,cache=TRUE,warning=FALSE,message=FALSE,dpi=dpi,out.width="100%", fig.height=highknit, fig.cap=c(cap1,cap2,cap3,cap4), echo=FALSE}
+#### Top 12 ASVs ####
+#### Top X OTU/ASV ####
+phylobjn <- phylobj # Take the fresh object
+label <- paste("Absolute read count top ",phyotu," ",binname,"s",sep="")
+u <- function.barplot.normal(phylobjn,"family","Family",label)
+u
+#### Top X OTU/ASV relative abundance ####
+phylobjn <- phylobj # Take the fresh object
+phylobjn_relab <- transform_sample_counts(phylobjn, function(otu) otu / sum(otu) )
+label <- paste("Relative read count top ",phyotu," ",binname,"s",sep="")
+u <- function.barplot.normal(phylobjn_relab,"family","Family",label)
+u
+#### Top X genera plotted as OTU/ASV ####
+phylobjn <- phylobj # Take the fresh object
+phylobjn.agg <- tax_glom(phylobjn, taxrank=rank_names(phylobjn)[6], NArm=FALSE) # merge on genus
+label <- paste("Absolute read count top ",phyotu," families as ",binname,"s",sep="")
+u <- function.barplot.aggreg(phylobjn.agg,"family","Family",label,relative=FALSE)
+u
+#### Top X genera plotted as OTU/ASV in rel abund ####
+phylobjn <- phylobj # Take the fresh object
+phylobjn.agg_relab <- transform_sample_counts(phylobjn, function(otu) otu / sum(otu) ) 
+phylobjn.agg_relab <- tax_glom(phylobjn.agg_relab, taxrank=rank_names(phylobjn.agg_relab)[6], NArm=FALSE) # merge on genus
+label <- paste("Relative abundance top ",phyotu," families as ",binname,"s",sep="")
+u <- function.barplot.aggreg(phylobjn.agg_relab,"family","Family",label,relative=TRUE)
+u
+```
+
+## Order level
+```{r Step3b-Plot-captions-orders,cache=TRUE,warning=FALSE,message=FALSE,dpi=dpi,out.width="100%", echo=FALSE}
+cap1 <- paste("Top ", phyotu, "",binname,"s were calculated based on their combined absolute read count across all samples and labeled with their respective family, all other ",binname,"s were labeled as 'Other'")
+cap2 <- paste("Top ", phyotu, "",binname,"s were calculated based on their combined relative abundance across all samples and labeled with their respective family, all other ",binname,"s were labeled as 'Other'")
+cap3 <- paste("Top ", phyotu, "orders were calculated based on their combined absolute read count across all samples and plotted as ",binname,"s, all other orders were labeled as 'Other'")
+cap4 <- paste("Top ", phyotu, "orders were calculated based on their combined relative abundance across all samples and plotted as ",binname,"s, all other orders were labeled as 'Other'")
+```
+
+```{r Step3b-Stacked-bar-plots-orders,cache=TRUE,warning=FALSE,message=FALSE,dpi=dpi,out.width="100%", fig.height=highknit, fig.cap=c(cap1,cap2,cap3,cap4), echo=FALSE}
+#### Top 12 ASVs ####
+#### Top X OTU/ASV ####
+phylobjn <- phylobj # Take the fresh object
+label <- paste("Absolute read count top ",phyotu," ",binname,"s",sep="")
+u <- function.barplot.normal(phylobjn,"family","Family",label)
+u
+#### Top X OTU/ASV relative abundance ####
+phylobjn <- phylobj # Take the fresh object
+phylobjn_relab <- transform_sample_counts(phylobjn, function(otu) otu / sum(otu) )
+label <- paste("Relative read count top ",phyotu," ",binname,"s",sep="")
+u <- function.barplot.normal(phylobjn_relab,"family","Family",label)
+u
+#### Top X genera plotted as OTU/ASV ####
+phylobjn <- phylobj # Take the fresh object
+phylobjn.agg <- tax_glom(phylobjn, taxrank=rank_names(phylobjn)[6], NArm=FALSE) # merge on genus
+label <- paste("Absolute read count top ",phyotu," orders as ",binname,"s",sep="")
+u <- function.barplot.aggreg(phylobjn.agg,"family","Family",label,relative=FALSE)
+u
+#### Top X genera plotted as OTU/ASV in rel abund ####
+phylobjn <- phylobj # Take the fresh object
+phylobjn.agg_relab <- transform_sample_counts(phylobjn, function(otu) otu / sum(otu) ) 
+phylobjn.agg_relab <- tax_glom(phylobjn.agg_relab, taxrank=rank_names(phylobjn.agg_relab)[6], NArm=FALSE) # merge on genus
+label <- paste("Relative abundance top ",phyotu," orders as ",binname,"s",sep="")
+u <- function.barplot.aggreg(phylobjn.agg_relab,"family","Family",label,relative=TRUE)
+u
+```
+
+
+## Phylum level
+
+```{r Step3b-Plot-captions-phyla,cache=TRUE,warning=FALSE,message=FALSE,dpi=dpi,out.width="100%", echo=FALSE}
+cap1 <- paste("Top ", phyotu, "",binname,"s were calculated based on their combined absolute read count across all samples and labeled with their respective phyla, all other ",binname,"s were labeled as 'Other'")
+cap2 <- paste("Top ", phyotu, "",binname,"s were calculated based on their combined relative abundance across all samples and labeled with their respective phyla, all other ",binname,"s were labeled as 'Other'")
+cap3 <- paste("Top ", phyotu, "orders were calculated based on their combined absolute read count across all samples and plotted as ",binname,"s, all other orders were labeled as 'Other'")
+cap4 <- paste("Top ", phyotu, "orders were calculated based on their combined relative abundance across all samples and plotted as ",binname,"s, all other orders were labeled as 'Other'")
+```
+
+```{r Step3b-Stacked-bar-plots-phyla,cache=TRUE,warning=FALSE,message=FALSE,dpi=dpi,out.width="100%", fig.height=highknit, fig.cap=c(cap1,cap2,cap3,cap4), echo=FALSE}
+#### Top 12 ASVs ####
+#### Top X OTU/ASV ####
+phylobjn <- phylobj # Take the fresh object
+label <- paste("Absolute read count top ",phyotu," ",binname,"s",sep="")
+u <- function.barplot.normal(phylobjn,"phylum","Phylum",label)
+u
+#### Top X OTU/ASV relative abundance ####
+phylobjn <- phylobj # Take the fresh object
+phylobjn_relab <- transform_sample_counts(phylobjn, function(otu) otu / sum(otu) )
+label <- paste("Relative read count top ",phyotu," ",binname,"s",sep="")
+u <- function.barplot.normal(phylobjn_relab,"phylum","Phylum",label)
+u
+#### Top X genera plotted as OTU/ASV ####
+phylobjn <- phylobj # Take the fresh object
+phylobjn.agg <- tax_glom(phylobjn, taxrank=rank_names(phylobjn)[6], NArm=FALSE) # merge on genus
+label <- paste("Absolute read count top ",phyotu," orders as ",binname,"s",sep="")
+u <- function.barplot.aggreg(phylobjn.agg,"phylum","Phylum",label,relative=FALSE)
+u
+#### Top X genera plotted as OTU/ASV in rel abund ####
+phylobjn <- phylobj # Take the fresh object
+phylobjn.agg_relab <- transform_sample_counts(phylobjn, function(otu) otu / sum(otu) ) 
+phylobjn.agg_relab <- tax_glom(phylobjn.agg_relab, taxrank=rank_names(phylobjn.agg_relab)[6], NArm=FALSE) # merge on genus
+label <- paste("Relative abundance top ",phyotu," orders as ",binname,"s",sep="")
+u <- function.barplot.aggreg(phylobjn.agg_relab,"phylum","Phylum",label,relative=TRUE)
+u
+```
+# Heatmaps
+
+Heatmaps are made to represent the community diversity of the most important `r binname`'s.
+
+```{r Step4-Captions-Heatmaps,cache=TRUE,warning=FALSE,message=FALSE,dpi=dpi,out.width="100%", echo=FALSE}
+cap1 <- paste("Heatmap of top 30 ",binname,"s in absolute read count")
+cap2 <- paste("Heatmap of top 30 ",binname,"s in relative abundance")
+```
+
+```{r Step4-Heatmaps,cache=TRUE,warning=FALSE,message=FALSE,dpi=dpi,out.width="100%", fig.height=(highknit), fig.cap=c(cap1, cap2), echo=FALSE}
+physeqobj.heat <- prune_taxa(names(sort(taxa_sums(phylobj),TRUE)[1:30]), phylobj)
+p <- plot_heatmap(physeqobj.heat,method = "NMDS",distance = "jaccard",low="#fef0a7", high="#9e0142", na.value="white",trans = log_trans(10))
+p + coord_flip()+theme(axis.text.x = element_text(size = 8))
+heat.table <- as.data.frame(tax_table(physeqobj.heat))
+kable(heat.table)
+phylobjn_rel <- transform_sample_counts(phylobjn, function(otu) otu / sum(otu) )
+physeqobj.heat <- prune_taxa(names(sort(taxa_sums(phylobjn_rel),TRUE)[1:30]), phylobjn_rel)
+p <- plot_heatmap(physeqobj.heat,method = "NMDS",distance = "jaccard",low="#fef0a7", high="#9e0142", na.value="white",trans = log_trans(10))
+p + coord_flip()+theme(axis.text.x = element_text(size = 8))
+heat.table <- as.data.frame(tax_table(physeqobj.heat))
+kable(heat.table)
+```
+
+# Rarefaction curves
+
+For appropriate sampling depth, curves should "level off". Do note that data filtering may have an impact on this result.
+
+```{r Step4-Captions-Rarefaction-curves,cache=TRUE,warning=FALSE,message=FALSE,dpi=dpi,out.width="100%", echo=FALSE}
+cap1 <- paste("Rarefaction after quality filtering and processing with ", analysismethod,sep="")
+```
+
+```{r Step4-Rarefaction-curves,cache=TRUE,warning=FALSE,message=FALSE,dpi=dpi,out.width="100%", fig.height=(standknit*2), fig.cap=c(cap1), echo=FALSE}
+rarecurve(t(otu_table(phylobj)), step=50, cex=0.5)
+```
+
+# Alpha diversity
+## Diversity metrics
+Diversity metrics Shannon and Simpson are reported below.
+
+```{r Step4-Alpha-Diversity,cache=TRUE,warning=FALSE,message=FALSE,dpi=dpi,out.width="100%", fig.height=(highknit), echo=FALSE}
+rich <- estimate_richness(phylobj, measures=c("Shannon", "Simpson", "InvSimpson"))
+kable(rich, caption = "Richness estimators")
+openxlsx::addWorksheet(wb,sheetName = "richness")
+openxlsx::writeData(wb,sheet="richness",x=rich, rowNames = TRUE)
+openxlsx::saveWorkbook(wb,file = paste("REPORT_files/", analysismethod,"_REPORT.xlsx",sep=""),overwrite=TRUE)
+p <- plot_richness(phylobj, measures=c("Shannon"))
+p <- p + ggtitle(paste("Shannon richness estimator")) + theme_bw() + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.3))
+p + coord_flip() + aes(x = reorder(samples, desc(samples)))
+p <- plot_richness(phylobj, measures=c("Simpson"))
+p <- p + ggtitle(paste("Simpson richness estimator")) + theme_bw() + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.3))
+p + coord_flip() + aes(x = reorder(samples, desc(samples)))
+p <- plot_richness(phylobj, measures=c("InvSimpson"))
+p <- p + ggtitle(paste("Inverse Simpson richness estimator")) + theme_bw() + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.3))
+p + coord_flip() + aes(x = reorder(samples, desc(samples)))
+if (varnum == 1) {
+p <- plot_richness(phylobj, x=metavars[1], measures=c("Shannon", "Simpson", "InvSimpson"))
+p <- p + ggtitle(paste("Richness estimaters by",metavars[1])) + theme_bw() + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.3))
+p + coord_flip() + aes(x = reorder(samples, desc(samples)))
+}
+if (varnum >= 2) {
+p <- plot_richness(phylobj, x=metavars[1], color=metavars[2], measures=c("Shannon", "Simpson", "InvSimpson"))
+p <- p + ggtitle(paste("Richness estimaters by",metavars[1])) + theme_bw() + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.3))
+p + coord_flip() + aes(x = reorder(samples, desc(samples)))
+}
+if (varnum >= 2) {
+p <- plot_richness(phylobj, x=metavars[2], color=metavars[1], measures=c("Shannon", "Simpson", "InvSimpson"))
+p <- p + ggtitle(paste("Richness estimaters by",metavars[1])) + theme_bw() + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.3))
+p + coord_flip() + aes(x = reorder(samples, desc(samples)))
+}
+if (varnum >= 2) {
+p <- plot_richness(phylobj, x=metavars[1], color=metavars[2], measures=c("Shannon", "Simpson", "InvSimpson"))
+p <- p + ggtitle(paste("Richness estimaters by",metavars[2])) + theme_bw() + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.3))
+p + coord_flip() + aes(x = reorder(samples, desc(samples)))
+}
+```
+
+# Beta diversity
+
+## Basic ordination
+
+This is on the raw, unnormalized counts (but given the large differences in sampling depth, the proportional data should be used - repeated see below)
+
+```{r Step5-Captions-Beta-Diversity,cache=TRUE,warning=FALSE,message=FALSE,dpi=dpi,out.width="100%", echo=FALSE}
+cap1 <- paste("Ordination on OTU level")
+cap2 <- paste("Ordination on OTU level")
+cap3 <- paste("Ordination on Genus level")
+cap4 <- paste("Ordination on Genus level")
+cap5 <- paste("Ordination on Phylum level")
+cap6 <- paste("Ordination on Phylum level")
+```
+
+```{r Step5-Beta-Diversity,cache=TRUE,warning=FALSE,message=FALSE,dpi=600,out.width="100%", fig.height=(standknit*2), fig.cap=c(cap1,cap2,cap3,cap4,cap5,cap6), echo=FALSE}
+phylobj.beta <- phylobj #take fresh object
+phylobrayPcoA <- phyloseq::ordinate(phylobj.beta,method = "PCoA",distance="bray")
+### requires a tree
+# phylobrayPcoA.w <- phyloseq::ordinate(phylobj.beta.tree,method = "PCoA", "unifrac", weighted=TRUE)
+p <- plot_ordination(phylobj.beta, phylobrayPcoA, type="samples", color=metavars[2], shape=metavars[1])
+p <- p + ggtitle(paste("Bray-Curtis dissimilarity PCoA")) + theme_bw() + geom_text(mapping = aes(label = SampleName), size = 3, vjust = 2, show.legend = FALSE) + geom_point(size=4, alpha=0.5)
+p$layers <- p$layers[-1]
+p
+
+p <- plot_ordination(phylobj.beta, phylobrayPcoA, type="samples", color=metavars[1], shape=metavars[2])
+p <- p + ggtitle(paste("Bray-Curtis dissimilarity PCoA")) + theme_bw() + geom_text(mapping = aes(label = SampleName), size = 3, vjust = 2, show.legend = FALSE) + geom_point(size=4, alpha=0.5)
+p$layers <- p$layers[-1]
+p
+
+
+phylobj.beta.gen <- tax_glom(phylobj.beta, "Genus" )
+phylobrayPcoA <- phyloseq::ordinate(phylobj.beta.gen,method = "PCoA")
+p <- plot_ordination(phylobj.beta.gen, phylobrayPcoA, type="samples", color=metavars[2], shape=metavars[1])
+p <- p + ggtitle(paste("Bray-Curtis dissimilarity PCoA")) + theme_bw() + geom_text(mapping = aes(label = SampleName), size = 3, vjust = 2, show.legend = FALSE) + geom_point(size=4, alpha=0.5)
+p$layers <- p$layers[-1]
+p
+
+p <- plot_ordination(phylobj.beta.gen, phylobrayPcoA, type="samples", color=metavars[1], shape=metavars[2])
+p <- p + ggtitle(paste("Bray-Curtis dissimilarity PCoA")) + theme_bw() + geom_text(mapping = aes(label = SampleName), size = 3, vjust = 2, show.legend = FALSE) + geom_point(size=4, alpha=0.5)
+p$layers <- p$layers[-1]
+p
+
+phylobj.beta.phyl <- tax_glom(phylobj.beta, "Phylum" )
+phylobrayPcoA <- phyloseq::ordinate(phylobj.beta.phyl,method = "PCoA")
+p <- plot_ordination(phylobj.beta.phyl, phylobrayPcoA, type="samples", color=metavars[2], shape=metavars[1])
+p <- p + ggtitle(paste("Bray-Curtis dissimilarity PCoA")) + theme_bw() + geom_text(mapping = aes(label = SampleName), size = 3, vjust = 2, show.legend = FALSE) + geom_point(size=4, alpha=0.5)
+p$layers <- p$layers[-1]
+p
+
+p <- plot_ordination(phylobj.beta.phyl, phylobrayPcoA, type="samples", color=metavars[1], shape=metavars[2])
+p <- p + ggtitle(paste("Bray-Curtis dissimilarity PCoA")) + theme_bw() + geom_text(mapping = aes(label = SampleName), size = 3, vjust = 2, show.legend = FALSE) + geom_point(size=4, alpha=0.5)
+p$layers <- p$layers[-1]
+p
+
+
+```
+
+
+# 2021 KIM
+
+Extra analyses were performed as discussed during the previous meeting. All figures can be provided as high resolution tiffs with lzw compression for publication purposes. The sample names were adjusted as requested. A unique identifier was introduced (subject ID 1-14) as every subject belonged either to the NF or to the RIF group and using identifiers 1-5 twice in both groups was confusing and interfered with the multivariate analysis procedures.
+
+Except for the alpha-diversity and Sparse Partial Least Squares Discriminant Analysis, the data was filtered according to the arbitrary cut-offs described by McMurdie and Holmes (2014) and normalized to proportions to deal with differences in sampling depth [@McMurdie2014]. 
+
+## Alpha-diversity 
+
+### Detailed explanation
+Species richness and diversity were estimated by calculating Hill numbers using the iNEXT package version \Sexpr{packageVersion("iNEXT")} developed for microbial ecology data [@Chiu2016;@Chao2014;@Colwell2012]. The basic principle behind richness and diversity estimators, is to use rare species e.g. singletons (reads observed just once in a sample) and doubletons (reads observed just twice in a sample), to estimate the unobserved true diversity. The iNEXT package differs from the common macro-ecology approach by using the Good-Turing frequency model to estimate the true singleton abundance based on the frequency of doubletons, tripletons ans quadrupletons. This is required because next-generation amplicon sequencing results in many spurious singletons emerging from sequencing errors. A boostrap method (50 iterations) was used to calculate 95% confidence intervals of all the richness and diversity estimates. Since extrapolation is not accurate beyond two times the sample size, samples were normalized to the maximal extrapolated sample coverage achieved in the most shallow sequenced sample to compare the Hill numbers calculated according to Chao _et al._, 2014 [@Chao2014]. Hill number 0, 1 and 2 correspond to respectively the richness, the Shannon and the Inverse Simpson index. Non-overlapping 95% bootstrap confidence intervals indicate statistically significant Hill numbers, whereas an overlap does not necessarily imply non-significance. 
+
+### Materials and methods 
+Species richness and diversity were estimated by calculating Hill numbers using the iNEXT package version `r packageVersion("iNEXT")` developed for microbial ecology data [@Chiu2016;@Chao2014;@Colwell2012]. A boostrap method (50 iterations) was used to calculate 95% confidence intervals of all the richness and diversity estimates. Since extrapolation is not accurate beyond two times the sample size, samples were normalized to the maximum extrapolated sample coverage achieved in the most shallow sequenced sample to compare the Hill numbers calculated according to Chao _et al._, 2014 [@Chao2014]. Samples EF_NF_1, EF_NF_2, EF_NF_3 and EF_NF_9 were omitted due to low sample coverages, corresponding to low read numbers (<100). Hill number 0, 1 and 2 correspond to respectively the richness, the Shannon and the Inverse Simpson index. Non-overlapping 95% bootstrap confidence intervals indicate statistically significant Hill numbers, whereas an overlap does not necessarily imply non-significance. Significant differences in Hill numbers between Sample types (Vaginal Secretions and Endometrial Fluid) and Fertility status (Normal Fertility versus Repeated Implantation Failure) were assessed based on Krusal-Wallis Rank Sum Tests.
+
+### Results 
+```{r Plot-change-theme1,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,fig.show='hide'}
+p <- ggplot() + theme_void()
+papertheme(p,sizeselect=12)
+
+papertheme(ggplot() + theme_void(),sizeselect=12)
+```
+
+```{r Sample-coverage-based-rarefaction-curves-16S-rRNA-gene-sequencing-data-all-samples,results='hide',include=FALSE,warning=FALSE,message=FALSE,cache=TRUE,fig.align='center',dpi=dpi,out.width="90%",out.height="100%",fig.cap="Size (A) and Coverage (B) sample-based rarefaction curves of the unfiltered 16S rRNA gene sequence count data. The colors represent different samples."}
+set.seed=711
+
+cl <- parallel::makeCluster(30,outfile="")
+detectCores()
+#registerDoParallel(cl)
+registerDoSNOW(cl)
+
+icov <- foreach(i=1:ncol(tab),.packages="iNEXT",.export="iNEXT") %dopar% 
+  { setTxtProgressBar(txtProgressBar(min = 1, max = ncol(tab), style = 3), i)
+    print(i)
+    iNEXT(tab[,i],q=0,datatype="abundance")
+      }
+icov
+stopCluster(cl)
+
+icov_list <- lapply(icov,function(x) {fortify(x,type=1)})
+icov_df <- rbindlist(icov_list,idcol=TRUE)
+icov_df$site <- icov_df$.id
+icov_df <- icov_df[,-1] 
+icov_df$site <- as.character(icov_df$site)
+
+sizerare <- ggiNEXT_df(data.frame(icov_df),se=FALSE,type=1,grey=FALSE,color.var="site",pointsize=1,linesize=0.5) +scale_shape_manual(values=rep(19,177)) + guides(color=FALSE,shape=FALSE,fill=FALSE)
+
+icov_list <- lapply(icov,function(x) {fortify(x,type=3)})
+icov_df <- rbindlist(icov_list,idcol=TRUE)
+icov_df$site <- icov_df$.id
+icov_df <- icov_df[,-1] 
+icov_df$site <- as.character(icov_df$site)
+
+covrare <- ggiNEXT_df(data.frame(icov_df),se=FALSE,type=3,grey=FALSE,color.var="site",pointsize=1,linesize=0.5) +scale_shape_manual(values=rep(19,177)) + guides(color=FALSE,shape=FALSE,fill=FALSE)
+
+plot_grid(papertheme(sizerare,12),papertheme(covrare,12),ncol=2,nrow=1,rel_widths = c(0.5,0.5),rel_heights = c(0.5,0.5),labels="AUTO")
+```
+
+```{r Sample-coverage-of-the-16S-rRNA-gene-sequencing-data-all-samples,results='hide',include=FALSE,warning=FALSE,message=FALSE,cache=TRUE,fig.align='center',dpi=dpi,out.width="60%",out.height="40%",fig.cap="Observed sample coverage across all samples. The colors represent different samples."}  
+# Range of the sample coverage of samples
+p <- ggplot(icov_df[method=="observed"],aes(x="Site",y=x,color=site)) + geom_jitter(position=position_jitter(width=.5, height=0),size=2) + stat_summary(fun.data=mean_sdl,mult=1,geom="pointrange", color="black",size=0.2) 
+p <- papertheme(p,sizeselect=8) + theme(axis.text.x = element_text(angle =0),strip.text.y =element_text(angle = 0, hjust = 1))
+p <- p + ylab("Sample Coverage") + xlab("") + theme(legend.position = "none")
+p
+```
+
+```{r Sample-coverage-based-rarefaction-curves-16S-rRNA-gene-sequencing-data-selected-samples,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,fig.align='center',dpi=dpi,out.width="90%",out.height="100%",fig.cap="Size (A) and Coverage (B) sample-based rarefaction curves of the unfiltered 16S rRNA gene sequence count data. The colors represent different samples."}
+# Remove blank and nested PCR samples 
+tab.phy <- phyloseq::otu_table(tab, taxa_are_rows = TRUE)
+tax.phy <- phyloseq::tax_table(as.matrix(tax.clean))
+sam.phy <- phyloseq::sample_data(metadata)
+phylobj_unfiltered <- phyloseq(tab.phy,tax.phy, sam.phy, fas.phy)
+phylobj_unfiltered  <- subset_taxa(phylobj_unfiltered,Kingdom %in% targetspecies)
+phylobj_unfiltered  = subset_samples(phylobj_unfiltered,PCR != "nested")
+phylobj_unfiltered  = subset_samples(phylobj_unfiltered,ID != "BLK")
+tab.sampleselect = data.frame(otu_table(phylobj_unfiltered))
+
+set.seed=711
+
+cl <- parallel::makeCluster(30,outfile="")
+detectCores()
+#registerDoParallel(cl)
+registerDoSNOW(cl)
+
+icov <- foreach(i=1:ncol(tab.sampleselect),.packages="iNEXT",.export="iNEXT") %dopar% 
+  { setTxtProgressBar(txtProgressBar(min = 1, max = ncol(tab.sampleselect), style = 3), i)
+    print(i)
+    iNEXT(tab.sampleselect[,i],q=0,datatype="abundance")
+      }
+icov
+stopCluster(cl)
+
+icov_list <- lapply(icov,function(x) {fortify(x,type=1)})
+icov_df <- rbindlist(icov_list,idcol=TRUE)
+icov_df$site <- icov_df$.id
+icov_df <- icov_df[,-1] 
+icov_df$site <- as.character(icov_df$site)
+
+sizerare <- ggiNEXT_df(data.frame(icov_df),se=FALSE,type=1,grey=FALSE,color.var="site",pointsize=1,linesize=0.5) +scale_shape_manual(values=rep(19,177)) + guides(color=FALSE,shape=FALSE,fill=FALSE)
+
+icov_list <- lapply(icov,function(x) {fortify(x,type=3)})
+icov_df <- rbindlist(icov_list,idcol=TRUE)
+icov_df$site <- icov_df$.id
+icov_df <- icov_df[,-1] 
+icov_df$site <- as.character(icov_df$site)
+
+covrare <- ggiNEXT_df(data.frame(icov_df),se=FALSE,type=3,grey=FALSE,color.var="site",pointsize=1,linesize=0.5) +scale_shape_manual(values=rep(19,177)) + guides(color=FALSE,shape=FALSE,fill=FALSE)
+
+plot_grid(papertheme(sizerare,12),papertheme(covrare,12),ncol=2,nrow=1,rel_widths = c(0.5,0.5),rel_heights = c(0.5,0.5),labels="AUTO")
+```
+
+```{r Sample-coverage-of-the-16S-rRNA-gene-sequencing-data-selected-samples,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,fig.align='center',dpi=dpi,out.width="60%",out.height="40%",fig.cap="Observed sample coverage across all samples. The colors represent different samples."}  
+# Range of the sample coverage of samples
+p <- ggplot(icov_df[method=="observed"],aes(x="Site",y=x,color=site)) + geom_jitter(position=position_jitter(width=.5, height=0),size=2) + stat_summary(fun.data=mean_sdl,mult=1,geom="pointrange", color="black",size=0.2) 
+p <- papertheme(p,sizeselect=8) + theme(axis.text.x = element_text(angle =0),strip.text.y =element_text(angle = 0, hjust = 1))
+p <- p + ylab("Sample Coverage") + xlab("") + theme(legend.position = "none")
+p
+
+# very low coverage corresponds to extremely low read counts
+colSums(tab.sampleselect)
+```
+
+Sample EF_NF_1, EF_NF_2, EF_NF_3 and EF_NF_9 had very low sample coverages (\@ref(fig:Sample-coverage-of-the-16S-rRNA-gene-sequencing-data-selected-samples)), corresponding to very low read numbers. They were removed for further alpha-diversity analysis. 
+
+```{r Extrapolated-Hill-numbers,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,fig.align='center',dpi=dpi,out.width="80%",out.height="50%",fig.show='hide',error=FALSE}   
+# Remove sample site 17,18,19 and 27
+phylobj_unfiltered  = subset_samples(phylobj_unfiltered ,SampleName!="EF_NF_1")
+phylobj_unfiltered  = subset_samples(phylobj_unfiltered ,SampleName!="EF_NF_2")
+phylobj_unfiltered  = subset_samples(phylobj_unfiltered ,SampleName!="EF_NF_3")
+phylobj_unfiltered  = subset_samples(phylobj_unfiltered ,SampleName!="EF_NF_9")
+tab.sampleselect = data.frame(otu_table(phylobj_unfiltered ))
+
+# Identify the sample with the minimal sample coverage in the rarefaction part of the curve
+SCmin_extrapolate <- icov_df[method=="extrapolated",] %>% dplyr::group_by(site) %>% subset(site!=17&site!=18&site!=19&site!=27) %>% dplyr::summarise(maxSC = max(x)) %>%  arrange(site) %>% summarise(minofmax = min(maxSC))
+SCmin_extrapolate <- SCmin_extrapolate[[1]]
+
+cl <- parallel::makeCluster(30,outfile="")
+detectCores()
+#registerDoParallel(cl)
+registerDoSNOW(cl)
+
+Hill_equalSC_extrapolate <- foreach(i=1:ncol(tab.sampleselect),.packages="iNEXT",.export="iNEXT") %dopar% 
+  { setTxtProgressBar(txtProgressBar(min = 1, max = ncol(tab.sampleselect), style = 3), i)
+    print(i)
+    estimateD(as.vector(tab.sampleselect[,i]),datatype="abundance",base="coverage",level=SCmin_extrapolate,conf=0.95)
+      }
+Hill_equalSC_extrapolate
+stopCluster(cl)
+
+Hill_equalSC_extrapolate_list <- lapply(Hill_equalSC_extrapolate,function(x) {fortify(x)})
+Hill_equalSC_extrapolate_df <- rbindlist(Hill_equalSC_extrapolate_list,idcol=TRUE)
+Hill_equalSC_extrapolate_df$site <- Hill_equalSC_extrapolate_df$.id
+Hill_equalSC_extrapolate_df <- Hill_equalSC_extrapolate_df[,-1] 
+Hill_equalSC_extrapolate_df$site <- as.character(Hill_equalSC_extrapolate_df$site)
+Hill_equalSC_extrapolate_df$SampleName <- mapvalues(Hill_equalSC_extrapolate_df$site,from=c(1:ncol(tab.sampleselect)),to=c(colnames(tab.sampleselect))) 
+
+Hill_equalSC_extrapolate_df <- join(Hill_equalSC_extrapolate_df,metadata,by="SampleName",type="left")
+
+write.table(Hill_equalSC_extrapolate_df,paste0("REPORT_files/","Hill_equalSC_extrapolate_df.txt"),row.names=TRUE)
+```
+ 
+```{r Extrapolated-richness-16S-rRNA-gene-sequencing-data,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,fig.align='center',dpi=dpi,out.width="80%",out.height="50%",fig.show='hide',error=FALSE}  
+# Hill 0
+     Hill_equalSC_extrapolate_df0 <- Hill_equalSC_extrapolate_df
+     Hill_equalSC_extrapolate_df0_stat <- Hill_equalSC_extrapolate_df0 %>% subset(order=="0")
+     write.table(Hill_equalSC_extrapolate_df0_stat,paste0("REPORT_files/","Hill_equalSC_extrapolate_df.txt"),row.names = TRUE)
+
+     fertility_stat <- c(unite(data.frame(univariatestat(Hill_equalSC_extrapolate_df0_stat$qD,Hill_equalSC_extrapolate_df0_stat$Fertility,padj="holm")$letters),letters,sep=" ")$letters)
+     type_stat <- c(unite(data.frame(univariatestat(Hill_equalSC_extrapolate_df0_stat$qD,Hill_equalSC_extrapolate_df0_stat$Type,padj="holm")$letters),letters,sep=" ")$letters)
+     fertility_type <- c(unite(data.frame(univariatestat(Hill_equalSC_extrapolate_df0_stat$qD,Hill_equalSC_extrapolate_df0_stat$TypeFertility,padj="holm",minobs=2)$letters),letters,sep=" ")$letters)
+    
+     maxqD <- aggregate(Hill_equalSC_extrapolate_df0_stat%>% subset(order=="0") %>% dplyr::select("qD"),by=list(Hill_equalSC_extrapolate_df0_stat$Type,Hill_equalSC_extrapolate_df0_stat$Fertility),max) 
+     colnames(maxqD) <- c("Type","Fertility","qD")
+     maxqD <- maxqD[,colnames(maxqD)%in%c(colnames(metadata),"qD")]
+    #maxqD$PPI_arm <- paste0(maxqD$PPI_arm,"PPI")
+     maxqD <- join(x= maxqD, y = metadata,type="right")
+     maxqD <- na.omit(maxqD)
+     maxqD$letters <- mapvalues(maxqD$TypeFertility,from=data.frame(univariatestat(Hill_equalSC_extrapolate_df0_stat$qD,Hill_equalSC_extrapolate_df0_stat$TypeFertility,padj="holm",minobs=2)$letters)$rowname,to=data.frame(univariatestat(Hill_equalSC_extrapolate_df0_stat$qD,Hill_equalSC_extrapolate_df0_stat$TypeFertility,padj="holm",minobs=2)$letters)$letters)
+     
+     maxqD$Type <- mapvalues(maxqD$Type,from=levels(factor(maxqD$Type)),to=type_stat)
+     maxqD$Fertility <- mapvalues(maxqD$Fertility,from=levels(factor(maxqD$Fertility)),to=fertility_stat)
+     maxqD$Type <- factor(maxqD$Type,levels=c("EF a","VS b"))
+     maxqD$Fertility <- factor(maxqD$Fertility,levels=c("NF a","RIF a"))
+     
+     Hill_equalSC_extrapolate_df0$Type <- mapvalues(Hill_equalSC_extrapolate_df0$Type,from=levels(factor(Hill_equalSC_extrapolate_df0$Type)),to=type_stat)
+     Hill_equalSC_extrapolate_df0$Fertility <- mapvalues(Hill_equalSC_extrapolate_df0$Fertility,from=levels(factor(Hill_equalSC_extrapolate_df0$Fertility)),to=fertility_stat)
+     Hill_equalSC_extrapolate_df0$Type <- factor(Hill_equalSC_extrapolate_df0$Type,levels=c("EF a","VS b"))
+     Hill_equalSC_extrapolate_df0$Fertility <- factor(Hill_equalSC_extrapolate_df0$Fertility,levels=c("NF a","RIF a"))
+     
+   
+## Plotting
+    boxp_Type <- ggplot(data= Hill_equalSC_extrapolate_df0 %>% subset(order=="0"),aes(y=factor(Type,levels=rev(levels(Type))),x=qD)) + geom_pointrange(aes(xmin=qD.LCL,xmax=qD.UCL,colour=IDunique),position=position_jitter(width=0,height=0.2),size=0.05)  + stat_summary(fun.data=mean_sdl,mult=1,geom="pointrange", color="black",size=0.2)
+    boxp_Type <- papertheme(boxp_Type,sizeselect=12) + theme(axis.text.x = element_text(angle =0),strip.text.y =element_text(angle = 0, hjust = 1),panel.background = element_rect(color="black",size=1),axis.text.y = element_blank()) + scale_colour_manual(name='',values=ID_14)
+    boxp_Type <- boxp_Type + xlab(substitute(paste("",H[0]," at SC","=",SC),list(SC=round(SCmin_extrapolate,2)))) + ylab("") + theme(legend.position = "none")+  theme(plot.margin = unit(c(0,0,0,0), "cm"))
+   
+    boxp_Fertility <- ggplot(data= Hill_equalSC_extrapolate_df0 %>% subset(order=="0"),aes(x=Fertility,y=qD)) + geom_pointrange(aes(ymin=qD.LCL,ymax=qD.UCL,colour=IDunique),position=position_jitter(width=0.2,height=0),size=0.05)  + stat_summary(fun.data=mean_sdl,mult=1,geom="pointrange", color="black",size=0.2)
+    boxp_Fertility <- papertheme(boxp_Fertility,sizeselect=12) + theme(strip.text.y =element_text(angle = 0, hjust = 1),panel.background = element_rect(color="black",size=1),axis.text.x = element_blank()) + scale_colour_manual(name='',values= ID_14)
+    boxp_Fertility <- boxp_Fertility + ylab(substitute(paste("",H[0]," at SC","=",SC),list(SC=round(SCmin_extrapolate,2)))) + xlab("") + theme(legend.position = "none")+    theme(plot.margin = unit(c(0,0,0,0), "cm"))
+    
+    subject_p <- ggplot(data= Hill_equalSC_extrapolate_df0 %>% subset(order=="0"),aes(x=IDunique,y=qD))
+    subject_p <- subject_p + geom_point(aes(colour=IDunique),size=1)  + facet_grid(Type~Fertility,scales="free",space="free_x")
+    subject_p <- subject_p + geom_errorbar(aes(x=IDunique,ymin=qD.LCL,ymax=qD.UCL ,color=IDunique),width=0.002)
+    #subject_p <-  subject_p + geom_text(data=maxqD,aes(x=5,y= max(qD)+max(qD)/10,label=letters),size=2)
+    #subject_p <- subject_p + geom_text_repel(aes(label=ID),size=2)
+    subject_p <- papertheme(subject_p,sizeselect=12) + theme(axis.text.x = element_text(angle =0),strip.text.y =element_text(angle = 0, hjust = 1),panel.background = element_rect(color="black",size=1)) +scale_colour_manual(name='',values=ID_14)
+    subject_p <- subject_p+ ylab(substitute(paste("",H[0]," Richness at extrapolated sample coverage","=",SC),list(SC=round(SCmin_extrapolate,2)))) + xlab("Subject ID") + theme(plot.margin = unit(c(0,0,0,0), "cm"))
+    subject_p <- subject_p + theme(legend.position="none")
+    subject_p <- OverlappingStripLabels(subject_p)
+    
+    boxp_subject_combo <- plot_grid(boxp_Fertility,NULL,NULL,NULL,NULL,NULL,subject_p,NULL,boxp_Type ,ncol=3,nrow=3,rel_widths=c(0.8,0,0.2),rel_heights = c(0.3,0,0.7),align="vh",axis="lbtr")
+```
+
+```{r Extrapolated-richness-16S-rRNA-gene-sequencing-data-plotting,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,fig.align='center',dpi=dpi,out.width="90%",out.height="90%",fig.width=12,fig.height=8,fig.cap="Extrapolated richness across Sample types (EF-VS) and Fertility status (NF-RIF). Identical letters indicate no statistically significant differences (p>0.05) as determined by Kruskal-Wallis Rank Sum Tests. 95\\% bootstrap confidence intervals are shown as error bars."}
+boxp_subject_combo
+
+tiff("./Figures_Kim/Richness.tiff",width=14*dpi,height=10*dpi,res=dpi,compression="lzw")
+boxp_subject_combo
+dev.off()
+```
+
+```{r Extrapolated-Shannon-diversity-16S-rRNA-gene-sequencing-data,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,fig.align='center',dpi=dpi,out.width="80%",out.height="50%",fig.show='hide',error=FALSE}  
+# Hill 1
+     Hill_equalSC_extrapolate_df1 <- Hill_equalSC_extrapolate_df
+     Hill_equalSC_extrapolate_df1_stat <- Hill_equalSC_extrapolate_df1 %>% subset(order=="1")
+     write.table(Hill_equalSC_extrapolate_df1_stat,paste0("REPORT_files/","Hill_equalSC_extrapolate_df.txt"),row.names = TRUE)
+
+     fertility_stat <- c(unite(data.frame(univariatestat(Hill_equalSC_extrapolate_df1_stat$qD,Hill_equalSC_extrapolate_df1_stat$Fertility,padj="holm")$letters),letters,sep=" ")$letters)
+     type_stat <- c(unite(data.frame(univariatestat(Hill_equalSC_extrapolate_df1_stat$qD,Hill_equalSC_extrapolate_df1_stat$Type,padj="holm")$letters),letters,sep=" ")$letters)
+     fertility_type <- c(unite(data.frame(univariatestat(Hill_equalSC_extrapolate_df1_stat$qD,Hill_equalSC_extrapolate_df1_stat$TypeFertility,padj="holm",minobs=2)$letters),letters,sep=" ")$letters)
+    
+     maxqD <- aggregate(Hill_equalSC_extrapolate_df1_stat%>% subset(order=="1") %>% dplyr::select("qD"),by=list(Hill_equalSC_extrapolate_df1_stat$Type,Hill_equalSC_extrapolate_df1_stat$Fertility),max) 
+     colnames(maxqD) <- c("Type","Fertility","qD")
+     maxqD <- maxqD[,colnames(maxqD)%in%c(colnames(metadata),"qD")]
+    #maxqD$PPI_arm <- paste0(maxqD$PPI_arm,"PPI")
+     maxqD <- join(x= maxqD, y = metadata,type="right")
+     maxqD <- na.omit(maxqD)
+     maxqD$letters <- mapvalues(maxqD$TypeFertility,from=data.frame(univariatestat(Hill_equalSC_extrapolate_df1_stat$qD,Hill_equalSC_extrapolate_df1_stat$TypeFertility,padj="holm",minobs=2)$letters)$rowname,to=data.frame(univariatestat(Hill_equalSC_extrapolate_df1_stat$qD,Hill_equalSC_extrapolate_df1_stat$TypeFertility,padj="holm",minobs=2)$letters)$letters)
+     
+     maxqD$Type <- mapvalues(maxqD$Type,from=levels(factor(maxqD$Type)),to=type_stat)
+     maxqD$Fertility <- mapvalues(maxqD$Fertility,from=levels(factor(maxqD$Fertility)),to=fertility_stat)
+     maxqD$Type <- factor(maxqD$Type,levels=c("EF a","VS b"))
+     maxqD$Fertility <- factor(maxqD$Fertility,levels=c("NF a","RIF a"))
+     
+     Hill_equalSC_extrapolate_df1$Type <- mapvalues(Hill_equalSC_extrapolate_df1$Type,from=levels(factor(Hill_equalSC_extrapolate_df1$Type)),to=type_stat)
+     Hill_equalSC_extrapolate_df1$Fertility <- mapvalues(Hill_equalSC_extrapolate_df1$Fertility,from=levels(factor(Hill_equalSC_extrapolate_df1$Fertility)),to=fertility_stat)
+     Hill_equalSC_extrapolate_df1$Type <- factor(Hill_equalSC_extrapolate_df1$Type,levels=c("EF a","VS b"))
+     Hill_equalSC_extrapolate_df1$Fertility <- factor(Hill_equalSC_extrapolate_df1$Fertility,levels=c("NF a","RIF a"))
+     
+   
+## Plotting
+    boxp_Type <- ggplot(data= Hill_equalSC_extrapolate_df1 %>% subset(order=="1"),aes(y=factor(Type,levels=rev(levels(Type))),x=qD)) + geom_pointrange(aes(xmin=qD.LCL,xmax=qD.UCL,colour=IDunique),position=position_jitter(width=0,height=0.2),size=0.05)  + stat_summary(fun.data=mean_sdl,mult=1,geom="pointrange", color="black",size=0.2)
+    boxp_Type <- papertheme(boxp_Type,sizeselect=12) + theme(axis.text.x = element_text(angle =0),strip.text.y =element_text(angle = 0, hjust = 1),panel.background = element_rect(color="black",size=1),axis.text.y = element_blank()) + scale_colour_manual(name='',values=ID_14)
+    boxp_Type <- boxp_Type + xlab(substitute(paste("",H[1]," at SC","=",SC),list(SC=round(SCmin_extrapolate,2)))) + ylab("") + theme(legend.position = "none")+  theme(plot.margin = unit(c(0,0,0,0), "cm"))
+   
+    boxp_Fertility <- ggplot(data= Hill_equalSC_extrapolate_df1 %>% subset(order=="1"),aes(x=Fertility,y=qD)) + geom_pointrange(aes(ymin=qD.LCL,ymax=qD.UCL,colour=IDunique),position=position_jitter(width=0.2,height=0),size=0.05)  + stat_summary(fun.data=mean_sdl,mult=1,geom="pointrange", color="black",size=0.2)
+    boxp_Fertility <- papertheme(boxp_Fertility,sizeselect=12) + theme(strip.text.y =element_text(angle = 0, hjust = 1),panel.background = element_rect(color="black",size=1),axis.text.x = element_blank()) + scale_colour_manual(name='',values= ID_14)
+    boxp_Fertility <- boxp_Fertility + ylab(substitute(paste("",H[1]," at SC","=",SC),list(SC=round(SCmin_extrapolate,2)))) + xlab("") + theme(legend.position = "none")+    theme(plot.margin = unit(c(0,0,0,0), "cm"))
+    
+    subject_p <- ggplot(data= Hill_equalSC_extrapolate_df1 %>% subset(order=="1"),aes(x=IDunique,y=qD))
+    subject_p <- subject_p + geom_point(aes(colour=IDunique),size=1)  + facet_grid(Type~Fertility,scales="free",space="free_x")
+    subject_p <- subject_p + geom_errorbar(aes(x=IDunique,ymin=qD.LCL,ymax=qD.UCL ,color=IDunique),width=0.002)
+    #subject_p <-  subject_p + geom_text(data=maxqD,aes(x=5,y= max(qD)+max(qD)/10,label=letters),size=2)
+    #subject_p <- subject_p + geom_text_repel(aes(label=ID),size=2)
+    subject_p <- papertheme(subject_p,sizeselect=12) + theme(axis.text.x = element_text(angle =0),strip.text.y =element_text(angle = 0, hjust = 1),panel.background = element_rect(color="black",size=1)) +scale_colour_manual(name='',values=ID_14)
+    subject_p <- subject_p+ ylab(substitute(paste("",H[1]," Richness at extrapolated sample coverage","=",SC),list(SC=round(SCmin_extrapolate,2)))) + xlab("Subject ID") + theme(plot.margin = unit(c(0,0,0,0), "cm"))
+    subject_p <- subject_p + theme(legend.position = "none")
+    subject_p <- OverlappingStripLabels(subject_p)
+    
+    boxp_subject_combo <- plot_grid(boxp_Fertility,NULL,NULL,NULL,NULL,NULL,subject_p,NULL,boxp_Type ,ncol=3,nrow=3,rel_widths=c(0.8,0,0.2),rel_heights = c(0.3,0,0.7),align="vh",axis="lbtr")
+```
+
+```{r Extrapolated-Shannon-diversity-16S-rRNA-gene-sequencing-data-plotting,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,fig.align='center',dpi=dpi,out.width="90%",out.height="90%",fig.width=12,fig.height=8,fig.cap="Extrapolated Shannon diversity across Sample types (EF-VS) and Fertility status (NF-RIF). Identical letters indicate no statistically significant differences (p>0.05) as determined by Kruskal-Wallis Rank Sum Tests. 95\\% bootstrap confidence intervals are shown as error bars."}
+boxp_subject_combo
+
+tiff("./Figures_Kim/Shannon.tiff",width=14*dpi,height=10*dpi,res=dpi,compression="lzw")
+boxp_subject_combo
+dev.off()
+```
+
+```{r Extrapolated-Inverse-Simpson-diversity-16S-rRNA-gene-sequencing-data,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,fig.align='center',dpi=dpi,out.width="80%",out.height="50%",fig.show='hide',error=FALSE}  
+# Hill 2
+     Hill_equalSC_extrapolate_df2 <- Hill_equalSC_extrapolate_df
+     Hill_equalSC_extrapolate_df2_stat <- Hill_equalSC_extrapolate_df2 %>% subset(order=="2")
+     write.table(Hill_equalSC_extrapolate_df2_stat,paste0("REPORT_files/","Hill_equalSC_extrapolate_df.txt"),row.names = TRUE)
+
+     fertility_stat <- c(unite(data.frame(univariatestat(Hill_equalSC_extrapolate_df2_stat$qD,Hill_equalSC_extrapolate_df2_stat$Fertility,padj="holm")$letters),letters,sep=" ")$letters)
+     type_stat <- c(unite(data.frame(univariatestat(Hill_equalSC_extrapolate_df2_stat$qD,Hill_equalSC_extrapolate_df2_stat$Type,padj="holm")$letters),letters,sep=" ")$letters)
+     fertility_type <- c(unite(data.frame(univariatestat(Hill_equalSC_extrapolate_df2_stat$qD,Hill_equalSC_extrapolate_df2_stat$TypeFertility,padj="holm",minobs=2)$letters),letters,sep=" ")$letters)
+    
+     maxqD <- aggregate(Hill_equalSC_extrapolate_df2_stat%>% subset(order=="2") %>% dplyr::select("qD"),by=list(Hill_equalSC_extrapolate_df2_stat$Type,Hill_equalSC_extrapolate_df2_stat$Fertility),max) 
+     colnames(maxqD) <- c("Type","Fertility","qD")
+     maxqD <- maxqD[,colnames(maxqD)%in%c(colnames(metadata),"qD")]
+    #maxqD$PPI_arm <- paste0(maxqD$PPI_arm,"PPI")
+     maxqD <- join(x= maxqD, y = metadata,type="right")
+     maxqD <- na.omit(maxqD)
+     maxqD$letters <- mapvalues(maxqD$TypeFertility,from=data.frame(univariatestat(Hill_equalSC_extrapolate_df2_stat$qD,Hill_equalSC_extrapolate_df2_stat$TypeFertility,padj="holm",minobs=2)$letters)$rowname,to=data.frame(univariatestat(Hill_equalSC_extrapolate_df2_stat$qD,Hill_equalSC_extrapolate_df2_stat$TypeFertility,padj="holm",minobs=2)$letters)$letters)
+     
+     maxqD$Type <- mapvalues(maxqD$Type,from=levels(factor(maxqD$Type)),to=type_stat)
+     maxqD$Fertility <- mapvalues(maxqD$Fertility,from=levels(factor(maxqD$Fertility)),to=fertility_stat)
+     maxqD$Type <- factor(maxqD$Type,levels=c("EF a","VS b"))
+     maxqD$Fertility <- factor(maxqD$Fertility,levels=c("NF a","RIF a"))
+     
+     Hill_equalSC_extrapolate_df2$Type <- mapvalues(Hill_equalSC_extrapolate_df2$Type,from=levels(factor(Hill_equalSC_extrapolate_df2$Type)),to=type_stat)
+     Hill_equalSC_extrapolate_df2$Fertility <- mapvalues(Hill_equalSC_extrapolate_df2$Fertility,from=levels(factor(Hill_equalSC_extrapolate_df2$Fertility)),to=fertility_stat)
+     Hill_equalSC_extrapolate_df2$Type <- factor(Hill_equalSC_extrapolate_df2$Type,levels=c("EF a","VS b"))
+     Hill_equalSC_extrapolate_df2$Fertility <- factor(Hill_equalSC_extrapolate_df2$Fertility,levels=c("NF a","RIF a"))
+     
+   
+## Plotting
+    boxp_Type <- ggplot(data= Hill_equalSC_extrapolate_df2 %>% subset(order=="2"),aes(y=factor(Type,levels=rev(levels(Type))),x=qD)) + geom_pointrange(aes(xmin=qD.LCL,xmax=qD.UCL,colour=IDunique),position=position_jitter(width=0,height=0.2),size=0.05)  + stat_summary(fun.data=mean_sdl,mult=1,geom="pointrange", color="black",size=0.2)
+    boxp_Type <- papertheme(boxp_Type,sizeselect=12) + theme(axis.text.x = element_text(angle =0),strip.text.y =element_text(angle = 0, hjust = 1),panel.background = element_rect(color="black",size=1),axis.text.y = element_blank()) + scale_colour_manual(name='',values=ID_14)
+    boxp_Type <- boxp_Type + xlab(substitute(paste("",H[2]," at SC","=",SC),list(SC=round(SCmin_extrapolate,2)))) + ylab("") + theme(legend.position = "none")+  theme(plot.margin = unit(c(0,0,0,0), "cm"))
+   
+    boxp_Fertility <- ggplot(data= Hill_equalSC_extrapolate_df2 %>% subset(order=="2"),aes(x=Fertility,y=qD)) + geom_pointrange(aes(ymin=qD.LCL,ymax=qD.UCL,colour=IDunique),position=position_jitter(width=0.2,height=0),size=0.05)  + stat_summary(fun.data=mean_sdl,mult=1,geom="pointrange", color="black",size=0.2)
+    boxp_Fertility <- papertheme(boxp_Fertility,sizeselect=12) + theme(strip.text.y =element_text(angle = 0, hjust = 1),panel.background = element_rect(color="black",size=1),axis.text.x = element_blank()) + scale_colour_manual(name='',values= ID_14)
+    boxp_Fertility <- boxp_Fertility + ylab(substitute(paste("",H[2]," at SC","=",SC),list(SC=round(SCmin_extrapolate,2)))) + xlab("") + theme(legend.position = "none")+    theme(plot.margin = unit(c(0,0,0,0), "cm"))
+    
+    subject_p <- ggplot(data= Hill_equalSC_extrapolate_df2 %>% subset(order=="2"),aes(x=IDunique,y=qD))
+    subject_p <- subject_p + geom_point(aes(colour=IDunique),size=1)  + facet_grid(Type~Fertility,scales="free",space="free_x")
+    subject_p <- subject_p + geom_errorbar(aes(x=IDunique,ymin=qD.LCL,ymax=qD.UCL ,color=IDunique),width=0.002)
+    #subject_p <-  subject_p + geom_text(data=maxqD,aes(x=5,y= max(qD)+max(qD)/10,label=letters),size=2)
+    #subject_p <- subject_p + geom_text_repel(aes(label=ID),size=2)
+    subject_p <- papertheme(subject_p,sizeselect=12) + theme(axis.text.x = element_text(angle =0),strip.text.y =element_text(angle = 0, hjust = 1),panel.background = element_rect(color="black",size=1)) +scale_colour_manual(name='',values=ID_14)
+    subject_p <- subject_p+ ylab(substitute(paste("",H[2]," Richness at extrapolated sample coverage","=",SC),list(SC=round(SCmin_extrapolate,2)))) + xlab("Subject ID") + theme(plot.margin = unit(c(0,0,0,0), "cm"))
+    subject_p <- subject_p + theme(legend.position = "none")
+    subject_p <- OverlappingStripLabels(subject_p)
+    
+    boxp_subject_combo <- plot_grid(boxp_Fertility,NULL,NULL,NULL,NULL,NULL,subject_p,NULL,boxp_Type ,ncol=3,nrow=3,rel_widths=c(0.8,0,0.2),rel_heights = c(0.3,0,0.7),align="vh",axis="lbtr")
+```
+
+```{r Extrapolated-Inverse-Simpson-diversity-16S-rRNA-gene-sequencing-data-plotting,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,fig.align='center',dpi=dpi,out.width="90%",out.height="90%",fig.width=12,fig.height=8,fig.cap="Extrapolated Inverse Simpson diversity across Sample types (EF-VS) and Fertility status (NF-RIF). Identical letters indicate no statistically significant differences (p>0.05) as determined by Kruskal-Wallis Rank Sum Tests. 95\\% bootstrap confidence intervals are shown as error bars."}
+boxp_subject_combo
+
+tiff("./Figures_Kim/InverseSimpson.tiff",width=14*dpi,height=10*dpi,res=dpi,compression="lzw")
+boxp_subject_combo
+dev.off()
+```
+
+### Interpretation 
+
+Between individuals, statistically significant differences in Hill numbers (non-overlapping 95% bootstrap confidence intervals) were observed ($\alpha$ = 0.05) (Figures \@ref(fig:Extrapolated-richness-16S-rRNA-gene-sequencing-data-plotting), \@ref(fig:Extrapolated-Shannon-diversity-16S-rRNA-gene-sequencing-data-plotting), \@ref(fig:Extrapolated-Inverse-Simpson-diversity-16S-rRNA-gene-sequencing-data-plotting)). 
+
+No significant differences were found in richness, Shannon or Inverse Simpson diversity between normal fertile women and women with repeated implantation failures. In contrast, endometrial fluid samples displayed a significantly increased richness and diversity compared to vaginal secretions (Figures \@ref(fig:Extrapolated-richness-16S-rRNA-gene-sequencing-data-plotting), \@ref(fig:Extrapolated-Shannon-diversity-16S-rRNA-gene-sequencing-data-plotting), \@ref(fig:Extrapolated-Inverse-Simpson-diversity-16S-rRNA-gene-sequencing-data-plotting)). 
+ 
+
+## Bargraphs for paper
+Barplots were made in replacement of the 4 separate figures in the draft (Figures \@ref(fig:barplotting-genus-av-phylum), \@ref(fig:barplotting-OTU)).   
+
+### Material and methods
+
+The OTU, genus and phylum level proportional microbial community composition was visualized in ggplot 2 `r packageVersion("ggplot2")`.
+
+### Results 
+```{r Plot-change-theme2,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,fig.show='hide'}
+p <- ggplot() + theme_void()
+papertheme(p,sizeselect=12)
+
+papertheme(ggplot() + theme_void(),sizeselect=12)
+```
+
+```{r barplotting-genus-av-phylum,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,out.extra='angle=90', fig.cap="\\label{fig:fig10} Genus level and average (NF:n=9 and RIF:n=5) phylum level microbial community composition of Endometrial Fluid (EF) and Vaginal Secretions (VS) of women with Normal Fertility (NF) or Repeated Implantantion Failure (RIF)."}    
+topn <- 5
+# Phylum level average
+phylobj.filter = subset_samples(phylobj.filter, PCR != "nested")
+phylobj.filter = subset_samples(phylobj.filter, ID != "BLK")
+phylobj.filter.phylum = aggregate_taxa(phylobj.filter,"Phylum") 
+phylobj.filter.phylum.sampleselect = transform_sample_counts(phylobj.filter.phylum, function(OTU) OTU/sum(OTU))
+phylobj.filter.phylum.sampleselect = data.frame(otu_table(phylobj.filter.phylum.sampleselect))
+
+  barplot <- phylobj.filter.phylum.sampleselect
+  selecttop20par <- rowSums(barplot)
+  barplot <- tibble::rownames_to_column(barplot)
+  barplot <- as.data.frame(barplot  %>% top_n(topn,selecttop20par))
+  other <- 1-colSums(barplot[,-1])
+  rownames(barplot) <- barplot$rowname
+  barplot <- barplot[,-1]
+  barplot <- rbind(barplot,other)
+  rownames(barplot)[nrow(barplot)] <- "Other"
+
+  phylobj.filter.phylum.sampleselect = data.frame(t(barplot))
+  phylobj.filter.phylum.sampleselect = tibble::rownames_to_column(phylobj.filter.phylum.sampleselect,var="SampleName")
+  phylobj.filter.phylum.sampleselect = join(phylobj.filter.phylum.sampleselect,metadata,"SampleName")
+
+phylobj.filter.phylum.sampleselect_av = aggregate(phylobj.filter.phylum.sampleselect %>% dplyr::select(-colnames(metadata)),by=phylobj.filter.phylum.sampleselect["TypeFertility"],FUN=mean)
+phylobj.filter.phylum.sampleselect_av = separate(phylobj.filter.phylum.sampleselect_av,TypeFertility,into=c("Type","Fertility"),sep="_")
+phylobj.filter.phylum.sampleselect_av = reshape2::melt(phylobj.filter.phylum.sampleselect_av,id.vars=c("Type","Fertility"))
+phylobj.filter.phylum.sampleselect_av$ID = "av \n Phylum"
+phylobj.filter.phylum.sampleselect_av$IDunique = "av \n Phylum"
+
+phylobj.filter.phylum.sampleselect_sd = aggregate(phylobj.filter.phylum.sampleselect %>% dplyr::select(-colnames(metadata)),by=phylobj.filter.phylum.sampleselect["TypeFertility"],FUN=sd)
+phylobj.filter.phylum.sampleselect_sd = separate(phylobj.filter.phylum.sampleselect_sd,TypeFertility,into=c("Type","Fertility"),sep="_")
+phylobj.filter.phylum.sampleselect_sd =reshape2::melt(phylobj.filter.phylum.sampleselect_sd,id.vars=c("Type","Fertility"))
+phylobj.filter.phylum.sampleselect_sd$ID = "av \n Phylum"
+phylobj.filter.phylum.sampleselect_sd$IDunique = "av \n Phylum"
+
+phylobj.filter.phylum.sampleselect_av_sd <- cbind(phylobj.filter.phylum.sampleselect_av,sd=phylobj.filter.phylum.sampleselect_sd$value)
+
+phylobj.filter.phylum.sampleselect_av_sd_cum <- data.frame(phylobj.filter.phylum.sampleselect_av_sd %>% dplyr::group_by(Type,Fertility) %>% dplyr::mutate(cum_av = cumsum(value)))
+
+topn <- 14
+# Genus level
+# Remove blank and nested PCR samples 
+phylobj.filter = subset_samples(phylobj.filter, PCR != "nested")
+phylobj.filter = subset_samples(phylobj.filter, ID != "BLK")
+phylobj.filter.genus = aggregate_taxa(phylobj.filter,"Genus") 
+phylobj.filter.genus.sampleselect = transform_sample_counts(phylobj.filter.genus, function(OTU) OTU/sum(OTU))
+phylobj.filter.genus.sampleselect = data.frame(otu_table(phylobj.filter.genus.sampleselect))
+  
+  barplot <- phylobj.filter.genus.sampleselect
+  selecttop20par <- rowSums(barplot)
+  barplot <- tibble::rownames_to_column(barplot)
+  barplot <- as.data.frame(barplot  %>% top_n(topn,selecttop20par))
+  other <- 1-colSums(barplot[,-1])
+  rownames(barplot) <- barplot$rowname
+  barplot <- barplot[,-1]
+  barplot <- rbind(barplot,other)
+  rownames(barplot)[nrow(barplot)] <- "Other"
+  barplot <- as.data.frame(t(barplot))
+  barplot <- tibble::rownames_to_column(barplot)
+  colnames(barplot)[1] <- "SampleName"
+  barplot <- join(barplot,metadata,by="SampleName")
+  barplot <- reshape2::melt(barplot,id.vars=colnames(metadata))
+
+# Colour names for levels of variable
+  genusvar <- as.character(barplot$variable)
+  phylumvar <- as.character(phylobj.filter.phylum.sampleselect_av_sd_cum$variable)
+  colvar <- unique(c(phylumvar,genusvar))
+  #names(thirtycolors) <- colvar
+  coldf <- data.frame(cbind(var=colvar,colour=thirtycolors[1:length(colvar)]))
+  colorbarplots <- paste("\'",coldf$var,"\'","=","\'",coldf$colour,"\'",sep="",collapse=",")
+  colorbarplots <- paste("c(", colorbarplots,")",sep="")
+  cat(colorbarplots)
+
+# Combine Genus and average Phylum
+  p <- ggplot(data=barplot,aes(x=IDunique,y=value)) + facet_grid(Type~Fertility,drop=TRUE,scales="free",space="free")
+  p <- p + geom_bar(aes(fill=variable,colour=variable),stat="identity") 
+  p <- p + geom_bar(data=data.frame(phylobj.filter.phylum.sampleselect_av_sd),aes(fill=variable),stat="identity") 
+  p <- p + geom_errorbar(data=data.frame(phylobj.filter.phylum.sampleselect_av_sd_cum),aes(ymin=1-cum_av,ymax=1-cum_av+sd,colour=variable),stat="identity",width=0.2)
+  p <- papertheme(p,sizeselect=12) + theme(axis.text.x = element_text(angle =0),strip.text.y =element_text(angle = 0, hjust = 1),panel.background = element_rect(color="black",size=1))+scale_fill_manual(name='Genus',values=c('Actinobacteria'='#323F24','Bacteroidetes'='#CB51D7','Firmicutes'='#72E245','Fusobacteria'='#DE4F2D','Proteobacteria'='#81DDC7','Other'='#6584C6','Gardnerella'='#CFAE3C','Corynebacterium'='#914261','Microbacterium'='#BFDC86','Micrococcus'='#CDC6BE','Cutibacterium'='#D3469A','Atopobium'='#3C315A','Prevotella'='#607B30','Staphylococcus'='#DD4469','Lactobacillus'='#5B9072','Streptococcus'='#CA9FC7','Clostridium'='#7F592D','Candidatus Lachnocurva'='#5A656D','Faecalibacterium'='#D1867F','Megasphaera'='#4C2426')) +scale_colour_manual(name='Genus',values=c('Actinobacteria'='#323F24','Bacteroidetes'='#CB51D7','Firmicutes'='#72E245','Fusobacteria'='#DE4F2D','Proteobacteria'='#81DDC7','Other'='#6584C6','Gardnerella'='#CFAE3C','Corynebacterium'='#914261','Microbacterium'='#BFDC86','Micrococcus'='#CDC6BE','Cutibacterium'='#D3469A','Atopobium'='#3C315A','Prevotella'='#607B30','Staphylococcus'='#DD4469','Lactobacillus'='#5B9072','Streptococcus'='#CA9FC7','Clostridium'='#7F592D','Candidatus Lachnocurva'='#5A656D','Faecalibacterium'='#D1867F','Megasphaera'='#4C2426'))
+  p <- p + ylab("Relative abundance") + xlab("Subject ID") + theme(legend.position="none")
+  #p <- p + geom_text(aes(label = "Genus",x=3,y = -Inf),size=2,vjust=5,fontface="plain",family="sans")
+  #p <- p +   coord_cartesian(clip = "off")  
+  #p <- p + labs(tag = "Genus") + theme(plot.tag.position = c(0.3,0))
+  p <- p+ scale_y_continuous(breaks=c(0.00,0.25,0.50,0.75,1.00))
+  
+  legend1 <- ggplot(data=barplot,aes(x=ID,y=value)) + facet_grid(Type~Fertility,drop=TRUE,scales="free")
+  legend1 <- legend1  + geom_bar(aes(fill=variable,colour=variable),stat="identity") +scale_fill_manual(name='Genus',values=c('Actinobacteria'='#323F24','Bacteroidetes'='#CB51D7','Firmicutes'='#72E245','Fusobacteria'='#DE4F2D','Proteobacteria'='#81DDC7','Other'='#6584C6','Gardnerella'='#CFAE3C','Corynebacterium'='#914261','Microbacterium'='#BFDC86','Micrococcus'='#CDC6BE','Cutibacterium'='#D3469A','Atopobium'='#3C315A','Prevotella'='#607B30','Staphylococcus'='#DD4469','Lactobacillus'='#5B9072','Streptococcus'='#CA9FC7','Clostridium'='#7F592D','Candidatus Lachnocurva'='#5A656D','Faecalibacterium'='#D1867F','Megasphaera'='#4C2426')) +scale_colour_manual(name='Genus',values=c('Actinobacteria'='#323F24','Bacteroidetes'='#CB51D7','Firmicutes'='#72E245','Fusobacteria'='#DE4F2D','Proteobacteria'='#81DDC7','Other'='#6584C6','Gardnerella'='#CFAE3C','Corynebacterium'='#914261','Microbacterium'='#BFDC86','Micrococcus'='#CDC6BE','Cutibacterium'='#D3469A','Atopobium'='#3C315A','Prevotella'='#607B30','Staphylococcus'='#DD4469','Lactobacillus'='#5B9072','Streptococcus'='#CA9FC7','Clostridium'='#7F592D','Candidatus Lachnocurva'='#5A656D','Faecalibacterium'='#D1867F','Megasphaera'='#4C2426')) + theme(legend.text = element_text(face="italic")) + guides(fill=guide_legend(nrow=4,title.vjust=0.95))
+  legend1 <- get_legend(legend1)
+  
+  legend2 <- ggplot(data=barplot,aes(x=ID,y=value)) + facet_grid(Type~Fertility,drop=TRUE,scales="free")
+  legend2  <- legend2  + geom_bar(data=data.frame(phylobj.filter.phylum.sampleselect_av_sd),aes(fill=variable),stat="identity")  +scale_fill_manual(name='Phylum',values=c('Actinobacteria'='#323F24','Bacteroidetes'='#CB51D7','Firmicutes'='#72E245','Fusobacteria'='#DE4F2D','Proteobacteria'='#81DDC7','Other'='#6584C6','Gardnerella'='#CFAE3C','Corynebacterium'='#914261','Microbacterium'='#BFDC86','Micrococcus'='#CDC6BE','Cutibacterium'='#D3469A','Atopobium'='#3C315A','Prevotella'='#607B30','Staphylococcus'='#DD4469','Lactobacillus'='#5B9072','Streptococcus'='#CA9FC7','Clostridium'='#7F592D','Candidatus Lachnocurva'='#5A656D','Faecalibacterium'='#D1867F','Megasphaera'='#4C2426')) +scale_colour_manual(name='Phylum',values=c('Actinobacteria'='#323F24','Bacteroidetes'='#CB51D7','Firmicutes'='#72E245','Fusobacteria'='#DE4F2D','Proteobacteria'='#81DDC7','Other'='#6584C6','Gardnerella'='#CFAE3C','Corynebacterium'='#914261','Microbacterium'='#BFDC86','Micrococcus'='#CDC6BE','Cutibacterium'='#D3469A','Atopobium'='#3C315A','Prevotella'='#607B30','Staphylococcus'='#DD4469','Lactobacillus'='#5B9072','Streptococcus'='#CA9FC7','Clostridium'='#7F592D','Candidatus Lachnocurva'='#5A656D','Faecalibacterium'='#D1867F','Megasphaera'='#4C2426')) + theme(legend.text = element_text(face="italic")) + guides(fill=guide_legend(nrow=2,title.vjust=0.95))
+  legend2 <- get_legend(legend2)
+  
+  bars <- plot_grid(p,plot_grid(legend1,legend2,ncol=2,rel_widths = c(0.6,0.4),axis=2,align="h"),nrow=2,rel_heights = c(0.8,0.2))
+  bars <- ggdraw(bars) + draw_text("Genus", x = 0.2, y = 0.23, size = 12, family="sans", hjust =0, vjust = 0,color="grey30")
+  bars <- ggdraw(bars) + draw_text("Genus", x = 0.8, y = 0.23, size = 12, family="sans", hjust =0, vjust = 0,color="grey30")
+  bars
+  
+tiff("./Figures_Kim/Barplots_GENUS_avphylum.tiff",width=14*dpi,height=10*dpi,res=dpi,compression="lzw")
+bars
+dev.off()
+```
+
+```{r barplotting-OTU,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,out.extra='angle=90', fig.cap="\\label{fig:fig10} Genus level and average (NF:n=9 and RIF:n=5) phylum level microbial community composition of Endometrial Fluid (EF) and Vaginal Secretions (VS) of women with Normal Fertility (NF) or Repeated Implantantion Failure (RIF)."}   
+# Proportional OTU table 
+  phylobj.filter.OTU.sampleselect = transform_sample_counts(phylobj.filter,function(OTU) OTU/sum(OTU))
+  metadata.sampleselect = data.frame(sample_data(phylobj.filter.OTU.sampleselect))
+  phylobj.filter.OTU.sampleselect = data.frame(otu_table(phylobj.filter.OTU.sampleselect))
+  
+topn <- 29
+# OTU level
+
+  barplot <- phylobj.filter.OTU.sampleselect
+  selecttop20par <- rowSums(barplot)
+  barplot <- tibble::rownames_to_column(barplot)
+  barplot <- as.data.frame(barplot  %>% top_n(topn,selecttop20par))
+  other <- 1-colSums(barplot[,-1])
+  rownames(barplot) <- barplot$rowname
+  barplot <- barplot[,-1]
+  barplot <- rbind(barplot,other)
+  rownames(barplot)[nrow(barplot)] <- "Other"
+  barplot <- as.data.frame(t(barplot))
+  barplot <- tibble::rownames_to_column(barplot)
+  colnames(barplot)[1] <- "SampleName"
+  barplot <- join(barplot,metadata,by="SampleName")
+  barplot <- reshape2::melt(barplot,id.vars=colnames(metadata))
+  barplot$variable <- gsub("Otu[0]+","OTU\\",barplot$variable)
+  barplot$variable  <- factor(barplot$variable,levels=unique(barplot$variable))
+ 
+# Combine Genus and average Phylum
+  p <- ggplot(data=barplot,aes(x=IDunique,y=value)) + facet_grid(Type~Fertility,drop=TRUE,scales="free",space="free")
+  p <- p + geom_bar(aes(fill=variable),stat="identity") 
+  p <- papertheme(p,sizeselect=12) + theme(axis.text.x = element_text(angle =0),strip.text.y =element_text(angle = 0, hjust = 1),panel.background = element_rect(color="black",size=1))+scale_fill_manual(name='OTU',values=thirtycolors)
+  p <- p + ylab("Relative abundance") + xlab("Subject ID") 
+  #p <- p + geom_text(aes(label = "Genus",x=3,y = -Inf),size=2,vjust=5,fontface="plain",family="sans")
+  #p <- p +   coord_cartesian(clip = "off")  
+  #p <- p + labs(tag = "Genus") + theme(plot.tag.position = c(0.3,0))
+  p <- p+ scale_y_continuous(breaks=c(0.00,0.25,0.50,0.75,1.00))+ guides(fill=guide_legend(nrow=3))
+  p
+  
+tiff("./Figures_Kim/Barplots_OTU.tiff",width=14*dpi,height=10*dpi,res=dpi,compression="lzw")
+p
+dev.off()
+```
+
+
+## Beta-diversity analysis: unsupervised PCoA
+
+### Material and methods
+
+The variation in OTU and genus level proportional microbial community composition in relation to the study design factors (Sample type and Fertility status), was first explored by means of unsupervised (unconstrained) Principal Coordinates Analysis (PCoA; stats `r packageVersion("stats")`) based on the Bray-Curtis dissimilarity matrix (vegan `r packageVersion("vegan")`) [@Gower1966;@Cailliez1983;@Becker1988;@Cox2001;@Anderson2006;@Ramette2007;@Borcard2011;@Oksanen2016]. Screeplots indicate a knee after the first 2 dimensions, suggesting that the variation in community composition is well captured in 2D.
+
+### Results 
+
+```{r Ordinations-plotting-function,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi}
+  # Ordination
+  ordinationplot <- function(ordinationpoints,colordesign,label,colorvector,designfactorname,Dim1,Dim2,Stress){
+    if(missing(Stress)){
+      plotobj <- ggplot(ordinationpoints) + geom_point(aes(x=fa,y=sa,color=colordesign),size=1,alpha=0.5) + scale_colour_manual(values=colorvector,name=designfactorname) + xlab(paste('PCoA Dim1',Dim1,'%',sep=" ")) + ylab(paste('PCoA Dim2',Dim2,'%',sep=" ")) 
+      plotobj <- papertheme(plotobj,sizeselect=12)  + geom_text_repel(data=ordinationpoints,aes(x=fa,y=sa,label=label,color=colordesign),size=3,alpha=1,show.legend=FALSE,max.overlaps=30) + theme(legend.position = c(0.6,1),legend.justification = c(0.6,1),legend.text = element_text(size=10))
+      # + annotate(geom="text",x=Inf,y=Inf,hjust=0.99,vjust=0.99,label=designfactorname,size=12*(5/14),family='sans',angle=0) 
+      return(plotobj)}
+    
+    if(missing(Dim1)){
+      plotobj <- ggplot(ordinationpoints)+geom_point(aes(x=fa,y=sa,color=colordesign),size=5,alpha=0.5) + scale_colour_manual(values=colorvector,name="Donor") + xlab("NMDS1") + ylab("NMDS2") 
+      plotobj <- papertheme(plotobj,sizeselect=12) + geom_text(data=ordinationpoints,aes(x=fa,y=sa,label=colordesign,color=colordesign),size=3,alpha=1,show.legend=FALSE) + theme(legend.position = "none") + annotate(geom="text",x=Inf,y=Inf,hjust=0.99,vjust=0.99,label=designfactorname,size=12*(5/14),family='sans',angle=0) + annotate(geom="text",x=-0.9,y=-1.1,label=paste("Stress =",round(Stress,2),sep=" "),size=8*(5/14),family='sans',angle=0) 
+      return(plotobj)} 
+  }
+```
+    
+```{r PcoA-at-OTU-level,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.show='hide'}
+# Proportional OTU table 
+  phylobj.filter.OTU.sampleselect = transform_sample_counts(phylobj.filter,function(OTU) OTU/sum(OTU))
+  metadata.sampleselect = data.frame(sample_data(phylobj.filter.OTU.sampleselect))
+  phylobj.filter.OTU.sampleselect = data.frame(otu_table(phylobj.filter.OTU.sampleselect))
+
+# Dissimilarity matrix
+  bray_OTUtable_prop <- vegdist(t(phylobj.filter.OTU.sampleselect),method="bray",binary="FALSE")
+      
+  # Ordination
+  set.seed(250)
+  pcoail <- cmdscale(bray_OTUtable_prop,k=(ncol(phylobj.filter.OTU.sampleselect)-1),eig=TRUE,add=TRUE)
+  ordiplot(scores(pcoail),c(1,2),type="t",main="PCoA with species")
+  speciespcoa <- wascores(pcoail$points[,1:2],t(phylobj.filter.OTU.sampleselect))
+  text(speciespcoa,rownames(speciespcoa),cex=0.7,col="red")
+      
+  Dim1 <- pcoail$eig[1]/sum(pcoail$eig)
+  Dim2 <- pcoail$eig[2]/sum(pcoail$eig)
+  Dim1 <- round(Dim1*100,0)
+  Dim2 <-  round(Dim2*100,0)
+      
+  barplot(pcoail$eig, names = paste ('PCoA', 1:length(pcoail$eig)), las = 3, ylab = 'eigenvalues')
+      
+  firstaxispoints <- pcoail$points[,1]
+  secondaxispoints <- pcoail$points[,2]
+      
+  OTU_PCOApoints <- data.frame(SampleName=names(firstaxispoints),fa=as.numeric(as.character(firstaxispoints)),sa=as.numeric(as.character(secondaxispoints)))
+  OTU_PCOApoints <- join(OTU_PCOApoints,metadata,by="SampleName")
+  rownames(OTU_PCOApoints) <- OTU_PCOApoints$SampleName
+```
+        
+```{r PcoA-at-OTU-level-plotting,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,out.width="100%",out.height="90%",fig.width=8,fig.height=12,fig.cap="A PCoA biplot of the proportional microbial community composition at OTU level as determined by 16S rRNA gene amplicon sequencing with points colored by Sample type (EF = Endometerial Fluid and VS = Vaginal Secretions), Fertility status (NF = Normal Fertility and RIF = Repeated Implantation Failure) and Subject ID (labeled 1-14)."}
+# ggplot visualization
+  PCOA_OTU_type <- ordinationplot(OTU_PCOApoints,OTU_PCOApoints$Type,OTU_PCOApoints$IDunique,Type_2,"Sample type",Dim1,Dim2)
+  PCOA_OTU_fertility <- ordinationplot(OTU_PCOApoints,OTU_PCOApoints$Fertility,OTU_PCOApoints$IDunique,Fertility_2,"Fertility",Dim1,Dim2) 
+  PCOA_OTU_ID <- ordinationplot(OTU_PCOApoints,OTU_PCOApoints$IDunique,OTU_PCOApoints$IDunique,ID_14,"Subject ID",Dim1,Dim2) + guides(color=guide_legend(ncol=2))
+  
+  OTUpcoas <- plot_grid(PCOA_OTU_type,PCOA_OTU_fertility,PCOA_OTU_ID,ncol=1,nrow=3,rel_heights = c(0.33,0.33,0.33))
+ 
+  OTUpcoas  
+   
+tiff("./Figures_Kim/PCOA_OTU.tiff",width=6*dpi,height=10*dpi,res=dpi,compression="lzw")
+OTUpcoas
+dev.off()
+```
+        
+```{r PcoA-at-Genus-level,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.show='hide'}
+# Dissimilarity matrix
+  bray_Genustable_prop <- vegdist(t(phylobj.filter.genus.sampleselect),method="bray",binary="FALSE")
+      
+# Ordination
+  set.seed(250)
+  pcoail <- cmdscale(bray_Genustable_prop,k=(ncol(phylobj.filter.genus.sampleselect)-1),eig=TRUE,add=TRUE)
+  ordiplot(scores(pcoail),c(1,2),type="t",main="PCoA with species")
+  speciespcoa <- wascores(pcoail$points[,1:2],t(phylobj.filter.genus.sampleselect))
+  text(speciespcoa,rownames(speciespcoa),cex=0.7,col="red")
+      
+  Dim1 <- pcoail$eig[1]/sum(pcoail$eig)
+  Dim2 <- pcoail$eig[2]/sum(pcoail$eig)
+  Dim1 <- round(Dim1*100,0)
+  Dim2 <-  round(Dim2*100,0)
+      
+  barplot(pcoail$eig, names = paste ('PCoA', 1:length(pcoail$eig)), las = 3, ylab = 'eigenvalues')
+      
+  firstaxispoints <- pcoail$points[,1]
+  secondaxispoints <- pcoail$points[,2]
+      
+  Genus_PCOApoints <- data.frame(SampleName=names(firstaxispoints),fa=as.numeric(as.character(firstaxispoints)),sa=as.numeric(as.character(secondaxispoints)))
+  Genus_PCOApoints <- join(Genus_PCOApoints,metadata,by="SampleName")
+  rownames(Genus_PCOApoints) <- Genus_PCOApoints$SampleName
+```
+  
+```{r PcoA-at-Genus-level-plotting,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,out.width="100%",out.height="90%",fig.width=8,fig.height=12,fig.cap="A PCoA biplot of the proportional microbial community composition at genus level as determined by 16S rRNA gene amplicon sequencing with points colored by Sample type (EF = Endometerial Fluid and VS = Vaginal Secretions), Fertility status (NF = Normal Fertility and RIF = Repeated Implantation Failure) and Subject ID (labeled 1-14)."}
+# ggplot visualization
+  PCOA_genus_type <- ordinationplot(Genus_PCOApoints,Genus_PCOApoints$Type,Genus_PCOApoints$ID,Type_2,"Sample type",Dim1,Dim2)
+  PCOA_genus_fertility <- ordinationplot(Genus_PCOApoints,Genus_PCOApoints$Fertility,Genus_PCOApoints$ID,Fertility_2,"Fertility",Dim1,Dim2) 
+  PCOA_genus_ID <- ordinationplot(Genus_PCOApoints,Genus_PCOApoints$IDunique,Genus_PCOApoints$IDunique,ID_14,"Subject ID",Dim1,Dim2) + guides(color=guide_legend(ncol=2))
+  #PCOA_genus_typefertility <- ordinationplot(Genus_PCOApoints,Genus_PCOApoints$TypeFertility,Genus_PCOApoints$ID,FertilityType_4,"Sample type - Fertility",Dim1,Dim2) 
+  
+genuspcoas <- plot_grid(PCOA_genus_type,PCOA_genus_fertility,PCOA_genus_ID,ncol=1,nrow=3,rel_heights = c(0.33,0.33,0.33))
+
+genuspcoas
+  
+tiff("./Figures_Kim/PCOA_GENUS.tiff",width=6*dpi,height=10*dpi,res=dpi,compression="lzw")
+genuspcoas
+dev.off()
+```
+        
+```{r PcoA-at-Genus-and-OTU-level-plotting,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,out.width="100%",out.height="90%",fig.width=8,fig.height=12,fig.cap="A PCoA biplot of the proportional microbial community composition at OTU and genus level as determined by 16S rRNA gene amplicon sequencing with points colored by Sample type (EF = Endometerial Fluid and VS = Vaginal Secretions), Fertility status (NF = Normal Fertility and RIF = Repeated Implantation Failure) and Subject ID (labeled 1-14)."}
+
+# Get legends
+  PCOA_type_legend <- get_legend(PCOA_OTU_type + theme(legend.position = "right",legend.justification = c(0,1)))
+  PCOA_fertility_legend <- get_legend(PCOA_OTU_fertility + theme(legend.position = "right",legend.justification = c(0,1)))
+  #PCOA_typefertility_legend <- get_legend(PCOA_OTU_typefertility + theme(legend.position = "right",legend.justification = c(0,1)))
+  PCOA_ID_legend <- get_legend(PCOA_OTU_ID + theme(legend.position = "right",legend.justification = c(0,1)))
+  
+# Plots without legend   
+OTUpcoas <- plot_grid(PCOA_OTU_type+theme(legend.position = "none"),PCOA_OTU_fertility+theme(legend.position = "none"),PCOA_OTU_ID+theme(legend.position = "none"),ncol=1,nrow=3,rel_heights = c(0.33,0.33,0.33))
+  
+genuspcoas <- plot_grid(PCOA_genus_type+theme(legend.position = "none"),PCOA_genus_fertility+theme(legend.position = "none"),PCOA_genus_ID+theme(legend.position = "none"),ncol=1,nrow=3,rel_heights = c(0.33,0.33,0.33))
+  
+PCOAlegend <- plot_grid(PCOA_type_legend,PCOA_fertility_legend,PCOA_ID_legend,ncol=1,nrow=3,rel_heights = c(0.33,0.33,0.33))
+
+plot_grid(OTUpcoas,genuspcoas,PCOAlegend,ncol=3,rel_widths = c(0.4,0.4,0.2),align="h",axis="2",labels=c("OTU","Genus",""),label_x = 0.5)
+
+tiff("./Figures_Kim/PCOA_GENUS_OTU.tiff",width=8*dpi,height=10*dpi,res=dpi,compression="lzw")
+plot_grid(OTUpcoas,genuspcoas,PCOAlegend,ncol=3,rel_widths = c(0.4,0.4,0.2),align="h",axis="2",labels=c("OTU","Genus",""),label_x = 0.5)
+dev.off()
+```
+
+### Interpretation
+At OTU level, endometrial fluid and vaginal secretion samples from the same subject tend to aggregate as a result of the inter-individual variability. At genus level, endometrial and vaginal samples are better separated, with the exception of some subjects. Subject 5, characterized by a very distinct relative microbial community composition and an increased richness and diversity, clusters separately (Figure \@ref(fig:PcoA-at-Genus-and-OTU-level-plotting)). 
+
+## Beta-diversity analysis: constrained RDA
+
+### Material and methods 
+
+The fact that the microbial community composition was mainly determined by inter-individual differences was confirmed through distance based redundancy analyses (dbRDA, vegan `r packageVersion("vegan")`) [@Borcard2011]. The scores obtained by a PCoA based on the Bray-Curtis dissimilarity matrix were modeled in function of the subject ID, Sample type (EF versus VS), and Fertility status (NF versus RIF). To differentiate between the different constraining variables, variation partitioning (varpart, vegan `r packageVersion("vegan")`) was performed. This approach consists of multiple RDAs that represent every possible model of all explanatory factors individually, as well as combinations thereof, including models in which factors are partialled out. Based on the varpart results, interesting models were further inspected and visualized with a dbRDA using the capscale function of the package vegan (version `r packageVersion("vegan")`). The constrained fraction of the variance, explained by the exploratory variables was adjusted using Ezekiel's formula or by means of a subtractive procedure in case of partial db RDA [@Banerjee1993;@Peres-Neto2006]. Interpretation of the results is preceded by permutational manova of the db RDA results to confirm that a relationship exists between the response data and the exploratory variables [@Legendre2011;@Borcard2011]. 
+
+RDA results were visualized in type II scaling correlation triplots, displaying the first two constrained canonical (labeled RDA Dim1/RDA Dim2) axes or in case of the two-level 'Sample Type' factor, the first canonical and the first unconstrained residual axis. Both axes were annotated with the proportional eigenvalues representing their contribution to the total (both constrained and unconstrained) variance. The coordinates of the sites were derived from the weighed sums of the scores of the response variables and explanatory variables are represented by centroids denoting the factor levels. In order to improve readability of the graph, the number of OTUs and genera represented as vectors in the triplot were limited to the most abundant taxa.
+
+
+### Results 
+
+```{r RDA-plotting-function,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi}   
+ RDAplot <- function(RDAscores,RDAvars,RDA_constraint,label,labelcolor,colordesign,colorvector,designfactorname,Dim1,Dim2,pointsize,constraintlevels){ 
+  if(constraintlevels>2){
+  plotobj <- ggplot(RDAscores)+geom_point(aes(x=CAP1,y=CAP2, color=colordesign),size=pointsize,alpha=0.5)
+  plotobj <- plotobj + scale_colour_manual(values=colorvector,name=designfactorname) + xlab(paste('RDA Dim1',Dim1,'%',sep=" ")) + ylab(paste('RDA Dim2',Dim2,'%',sep=" ")) 
+  plotobj <- papertheme(plotobj,sizeselect=10) 
+  plotobj <- plotobj + geom_text_repel(data=RDAscores,aes(x=CAP1,y=CAP2,label=label),color=mapvalues(label,from=levels(label),to=labelcolor),size=3,alpha=1,show.legend=FALSE,max.overlaps=30)
+  #plotobj <- plotobj + geom_text(data=RDAscores,aes(x=CAP1,y=CAP2,label=colordesign,color=colordesign),size=3,alpha=1,show.legend=FALSE) + theme(legend.position = "none")
+  plotobj <- plotobj + geom_segment(data=RDAvars,aes(x=0,y=0,xend=CAP1,yend=CAP2),color='red',arrow=arrow(length = unit(0.01, "npc")),alpha=0.5) + geom_text_repel(data=RDAvars,aes(x=CAP1,y=CAP2,label=rownames(RDAvars)),color='red',hjust=1,segment.alpha=0.1,size=2,max.overlaps=30)
+  plotobj <- plotobj +  geom_text_repel(data=RDA_constraint,aes(x=CAP1,y=CAP2,label=rownames(RDA_constraint)),color='blue',hjust=1,segment.alpha=0.1,size=2)
+  plotobj <- plotobj + guides(colour=guide_legend(nrow=2))
+  return(plotobj)}else{
+  plotobj <- ggplot(RDAscores)+geom_point(aes(x=CAP1,y=MDS1, color=colordesign),size=pointsize,alpha=0.5)
+  plotobj <- plotobj + scale_colour_manual(values=colorvector,name=designfactorname) + xlab(paste('RDA Dim1',Dim1,'%',sep=" ")) + ylab(paste('RDA Dim2',Dim2,'%',sep=" ")) 
+  plotobj <- papertheme(plotobj,sizeselect=10) 
+  plotobj <- plotobj + geom_text_repel(data=RDAscores,aes(x=CAP1,y=MDS1,label=label),color=mapvalues(label,from=levels(label),to=labelcolor),size=3,alpha=1,show.legend=FALSE,max.overlaps=30)
+  #plotobj <- plotobj + geom_text(data=RDAscores,aes(x=CAP1,y=MDS1,label=colordesign,color=colordesign),size=3,alpha=1,show.legend=FALSE) + theme(legend.position = "none")
+  plotobj <- plotobj + geom_segment(data=RDAvars,aes(x=0,y=0,xend=CAP1,yend=MDS1),color='red',arrow=arrow(length = unit(0.01, "npc")),alpha=0.5) + geom_text_repel(data=RDAvars,aes(x=CAP1,y=MDS1,label=rownames(RDAvars)),color='red',hjust=0,segment.alpha=0.1,size=2,max.overlaps=30,nudge_x = 0.02,nudge_y=0.05)
+  plotobj <- plotobj +  geom_text_repel(data=RDA_constraint,aes(x=CAP1,y=MDS1,label=rownames(RDA_constraint)),color='blue',hjust=1,segment.alpha=0.1,size=2)
+  plotobj <- plotobj + guides(colour=guide_legend(nrow=2))  
+  }
+ } 
+```     
+
+```{r varpart-at-OTU-level,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.width=10,fig.height=6,fig.cap="Variation partitioning Venn diagram displaying the adjusted R squared value indicating the explanatory power of the metadata design variables and their interactions (intersections of the diagram) with respect to the observed variation in the OTU level relative microbial community composition."}
+OTU_varp <- varpart(bray_OTUtable_prop,~Type,~Fertility,~IDunique,data=metadata.sampleselect)
+
+  OTU_varp
+  OTU_varp_Type <- OTU_varp$part$indfract[1,3]
+  OTU_varp_Fertility <- OTU_varp$part$indfract[2,3]
+  OTU_varp_ID <- OTU_varp$part$indfract[3,3]
+
+  OTU_varp_Type_sign <- anova.cca(vegan::capscale(t(phylobj.filter.OTU.sampleselect)~Type,dist="bray",data=metadata.sampleselect),step=1000,permutations=1000,parallel=40)
+  OTU_varp_Fertility_sign <- anova.cca(vegan::capscale(t(phylobj.filter.OTU.sampleselect)~Fertility,dist="bray",data=metadata.sampleselect) ,step=1000,permutations=1000,parallel=40)
+  OTU_varp_ID_sign <- anova.cca(vegan::capscale(t(phylobj.filter.OTU.sampleselect)~IDunique,dist="bray",data=metadata.sampleselect),step=1000,permutations=1000,parallel=40)
+  
+ OTU_varp_Type_sign_p <- OTU_varp_Type_sign$`Pr`[1]
+ OTU_varp_Fertility_sign_p <- OTU_varp_Fertility_sign$`Pr`[1]
+ OTU_varp_ID_sign_p <- OTU_varp_ID_sign$`Pr`[1]
+```
+
+```{r varpart-at-genus-level,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.width=10,fig.height=6,fig.cap="Variation partitioning Venn diagram displaying the adjusted R squared value indicating the explanatory power of the metadata design variables and their interactions (intersections of the diagram) with respect to the observed variation in the genus level relative microbial community composition."}
+genus_varp <- varpart(bray_Genustable_prop,~Type,~Fertility,~IDunique,data=metadata.sampleselect)
+
+  genus_varp
+  genus_varp_Type <- genus_varp$part$indfract[1,3]
+  genus_varp_Fertility <- genus_varp$part$indfract[2,3]
+  genus_varp_ID <- genus_varp$part$indfract[3,3]
+
+  genus_varp_Type_sign <- anova.cca(vegan::capscale(t(phylobj.filter.genus.sampleselect)~Type,dist="bray",data=metadata.sampleselect),step=1000,permutations=1000,parallel=40)
+  genus_varp_Fertility_sign <- anova.cca(vegan::capscale(t(phylobj.filter.genus.sampleselect)~Fertility,dist="bray",data=metadata.sampleselect) ,step=1000,permutations=1000,parallel=40)
+  genus_varp_ID_sign <- anova.cca(vegan::capscale(t(phylobj.filter.genus.sampleselect)~IDunique,dist="bray",data=metadata.sampleselect),step=1000,permutations=1000,parallel=40)
+  
+ genus_varp_Type_sign_p <- genus_varp_Type_sign$`Pr`[1]
+ genus_varp_Fertility_sign_p <- genus_varp_Fertility_sign$`Pr`[1]
+ genus_varp_ID_sign_p <- genus_varp_ID_sign$`Pr`[1]
+```
+
+```{r varpart-at-OTU-and-genus-level-plotting,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.width=10,fig.height=6,fig.cap="Variation partitioning Venn diagram displaying the adjusted R squared value indicating the explanatory power of the metadata design variables and their interactions (intersections of the diagram) with respect to the observed variation in the OTU resp. genus level relative microbial community composition.",fig.pos = "H"}
+
+tiff("./Figures_Kim/varpart_OTU.tiff",width=6*dpi,height=6*dpi,res=dpi,compression="lzw")
+plot(OTU_varp,digits=1,bg = fifteencolors,Xnames=c("Type","Fertility","ID"))
+dev.off()
+
+tiff("./Figures_Kim/varpart_GENUS.tiff",width=6*dpi,height=6*dpi,res=dpi,compression="lzw")
+plot(genus_varp,digits=1,bg = fifteencolors,Xnames=c("Type","Fertility","ID"))
+dev.off()
+
+OTU_varp_img <- image_read("./Figures_Kim/varpart_OTU.tiff")
+Genus_varp_img <- image_read("./Figures_Kim/varpart_GENUS.tiff")
+
+plot_grid(image_ggplot(OTU_varp_img),image_ggplot(Genus_varp_img),ncol=2,rel_widths = c(0.5,0.5),align="h",axis="2",labels=c("OTU","Genus",""),label_x = 0.5)
+
+tiff("./Figures_Kim/varpart_GENUS_OTU.tiff",width=12*dpi,height=6*dpi,res=dpi,compression="lzw")
+plot_grid(image_ggplot(OTU_varp_img),image_ggplot(Genus_varp_img),ncol=2,rel_widths = c(0.5,0.5),align="h",axis="2",labels=c("OTU","Genus",""),label_x = 0.5)
+dev.off()
+```
+
+```{r Global-dbRDA-at-OTU-level,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.show="hide"}
+# Homogeneity of the within-group variance-covariance matrixes. Assumptions met for all factors
+Type_betadisper <- betadisper(vegdist(t(phylobj.filter.OTU.sampleselect),method="bray"),metadata.sampleselect$Type)
+anova(Type_betadisper)
+permutest(Type_betadisper)
+plot(Type_betadisper)
+boxplot(Type_betadisper)
+
+Fertility_betadisper <- betadisper(vegdist(t(phylobj.filter.OTU.sampleselect),method="bray"),metadata.sampleselect$Fertility)
+anova(Fertility_betadisper)
+permutest(Fertility_betadisper)
+plot(Fertility_betadisper)
+boxplot(Fertility_betadisper)
+
+ID_betadisper <- betadisper(vegdist(t(phylobj.filter.OTU.sampleselect),method="bray"),metadata.sampleselect$IDunique)
+anova(ID_betadisper)
+permutest(ID_betadisper)
+plot(ID_betadisper)
+boxplot(ID_betadisper)
+
+# Formula RDA to test all explanatory variables and possible interactions
+RDA_global_OTU <- vegan::capscale(t(phylobj.filter.OTU.sampleselect)~Type+Fertility+IDunique,dist="bray",data=metadata.sampleselect) 
+RDA_global_OTU 
+summary(RDA_global_OTU)
+coef(RDA_global_OTU)  
+Dim1 <- round(summary(RDA_global_OTU)$cont$importance[2,1]*100,2) # concont is the constrained fraction of the eigenvalues 
+Dim2 <- round(summary(RDA_global_OTU)$cont$importance[2,2]*100,2) # concont is the constrained fraction of the eigenvalues 
+
+barplot(summary(RDA_global_OTU)$cont$importance[1,], names = colnames(summary(RDA_global_OTU)$cont$importance), las = 3, ylab = 'eigenvalues')
+
+# Permutation test of the results
+anova.cca(RDA_global_OTU,step=1000,permutations=1000,parallel=40)
+#anova.cca(RDA_global_OTU,by="axis",step=1000,permutations=1000,parallel=40)
+anova.cca(RDA_global_OTU,by="term",step=1000,permutations=1000,parallel=40)
+
+# Explanatory power of the variables included
+Runadj <- RsquareAdj(RDA_global_OTU)$r.squared
+Radj <- RsquareAdj(RDA_global_OTU)$adj.r.squared
+Radj
+
+# Plotting the results using scaling 1 
+plot(RDA_global_OTU,scaling=1,main="Triplot RDA - scaling 1 ",type = "text",display=c("sp","wa","cn"))
+plot(RDA_global_OTU,scaling=1,main="Triplot - scaling 1 ",type = "text",display=c("sp","lc","cn"))
+
+# Extract values to plot with ggplot2
+RDA_global_OTU_scores_scaling1 <- data.frame(scores(RDA_global_OTU,choices=1:2,scaling=1,display="sites"))
+RDA_global_OTU_var_scaling1 <- data.frame(scores(RDA_global_OTU,choices=1:2,scaling=1,display="species"))
+RDA_global_OTU_var_scaling1_distance <- mutate(RDA_global_OTU_var_scaling1,Dist=sqrt(RDA_global_OTU_var_scaling1[,1]^2+RDA_global_OTU_var_scaling1[,2]^2),Abundance=rowSums(phylobj.filter.OTU.sampleselect))
+RDA_global_OTU_constraint_scaling1 <- data.frame(summary(RDA_global_OTU)$centroids)
+rownames(RDA_global_OTU_constraint_scaling1) <- gsub("Type","Type ",rownames(RDA_global_OTU_constraint_scaling1))
+rownames(RDA_global_OTU_constraint_scaling1) <- gsub("Fertility","Fertility ",rownames(RDA_global_OTU_constraint_scaling1))
+rownames(RDA_global_OTU_constraint_scaling1) <- gsub("ID","ID ",rownames(RDA_global_OTU_constraint_scaling1))
+
+# Plotting the results using scaling 2 
+plot(RDA_global_OTU,scaling=2,main="Triplot RDA - scaling 2 ",type = "text",display=c("sp","wa","cn"))
+plot(RDA_global_OTU,scaling=2,main="Triplot - scaling 2 ",type = "text",display=c("sp","lc","cn"))
+
+# Extract values to plot with ggplot2
+RDA_global_OTU_scores_scaling2 <- data.frame(scores(RDA_global_OTU,choices=1:2,scaling=2,display="sites"))
+RDA_global_OTU_var_scaling2 <- data.frame(scores(RDA_global_OTU,choices=1:2,scaling=2,display="species"))
+RDA_global_OTU_var_scaling2_distance <- mutate(RDA_global_OTU_var_scaling2,Dist=sqrt(RDA_global_OTU_var_scaling2[,1]^2+RDA_global_OTU_var_scaling2[,2]^2),Abundance=rowSums(phylobj.filter.OTU.sampleselect))
+RDA_global_OTU_constraint_scaling2 <- data.frame(summary(RDA_global_OTU)$centroids)
+rownames(RDA_global_OTU_constraint_scaling2) <- gsub("Type","Type ",rownames(RDA_global_OTU_constraint_scaling2))
+rownames(RDA_global_OTU_constraint_scaling2) <- gsub("Fertility","Fertility ",rownames(RDA_global_OTU_constraint_scaling2))
+rownames(RDA_global_OTU_constraint_scaling2) <- gsub("ID","ID ",rownames(RDA_global_OTU_constraint_scaling2))
+```
+  
+```{r Global-dbRDA-at-OTU-level-plotting,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.width=10,fig.height=8,fig.cap="Global redundancy analysis type II scaling correlation triplot with the response variables (most abundant OTUs) indicated in red and the different factors represented by centroid factor levels in blue. All factors in the global model significantly contributed to the variation in relative microbial community composition, albeit the negligible explanatory power (R^2^ adjusted) of the Sample type and Fertility status."}
+# Most abundant taxa to plot
+select_top_taxa <- RDA_global_OTU_var_scaling2_distance$Abundance
+taxaforplot <- tibble::rownames_to_column(data.frame(RDA_global_OTU_var_scaling2_distance))
+taxaforplot$rowname <- gsub("OTU","",taxaforplot$rowname)
+taxaforplot <- as.data.frame(taxaforplot  %>% top_n(13,select_top_taxa))
+rownames(taxaforplot) <- taxaforplot[,1]
+taxaforplot <- taxaforplot[,-1] 
+rownames(taxaforplot) <- gsub("Otu[0]+","OTU\\",rownames(taxaforplot))
+
+# Centroids to plot
+centroidsforplot <- RDA_global_OTU_constraint_scaling2[c(1:4),]
+
+# ggplot visualization
+RDA_global_OTU_plot <- RDAplot(RDA_global_OTU_scores_scaling2,taxaforplot,centroidsforplot,metadata.sampleselect$IDunique,ID_14,metadata.sampleselect$IDunique,ID_14,"Subject",Dim1,Dim2,1,4)
+
+# Add explanatory power 
+RDA_global_OTU_plot <- RDA_global_OTU_plot + geom_text(aes(x=Inf,y=Inf,vjust=1, hjust=1),label=paste("R[adj~ID]^2","==",round(OTU_varp_ID,2)),parse=TRUE)
+RDA_global_OTU_plot <- RDA_global_OTU_plot + geom_text(aes(x=Inf,y=Inf,vjust=2, hjust=1),label=paste("R[adj~Fertility]^2","==",round(OTU_varp_Fertility,3)),parse=TRUE)
+RDA_global_OTU_plot <- RDA_global_OTU_plot + geom_text(aes(x=Inf,y=Inf,vjust=3, hjust=1),label=paste("R[adj~Type]^2","==",round(OTU_varp_Type,3)),parse=TRUE)
+RDA_global_OTU_plot
+```
+ 
+```{r Global-dbRDA-at-genus-level,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.show="hide"}
+# Homogeneity of the within-group variance-covariance matrixes. Assumptions met for all factors
+Type_betadisper <- betadisper(vegdist(t(phylobj.filter.genus.sampleselect),method="bray"),metadata.sampleselect$Type)
+anova(Type_betadisper)
+permutest(Type_betadisper)
+plot(Type_betadisper)
+boxplot(Type_betadisper)
+
+Fertility_betadisper <- betadisper(vegdist(t(phylobj.filter.genus.sampleselect),method="bray"),metadata.sampleselect$Fertility)
+anova(Fertility_betadisper)
+permutest(Fertility_betadisper)
+plot(Fertility_betadisper)
+boxplot(Fertility_betadisper)
+
+ID_betadisper <- betadisper(vegdist(t(phylobj.filter.genus.sampleselect),method="bray"),metadata.sampleselect$IDunique)
+anova(ID_betadisper)
+permutest(ID_betadisper)
+plot(ID_betadisper)
+boxplot(ID_betadisper)
+
+# Formula RDA to test all explanatory variables and possible interactions
+RDA_global_genus <- vegan::capscale(t(phylobj.filter.genus.sampleselect)~Type+Fertility+IDunique,dist="bray",data=metadata.sampleselect) 
+RDA_global_genus 
+summary(RDA_global_genus)
+coef(RDA_global_genus)  
+Dim1 <- round(summary(RDA_global_genus)$cont$importance[2,1]*100,2) # concont is the constrained fraction of the eigenvalues 
+Dim2 <- round(summary(RDA_global_genus)$cont$importance[2,2]*100,2) # concont is the constrained fraction of the eigenvalues 
+
+barplot(summary(RDA_global_genus)$cont$importance[1,], names = colnames(summary(RDA_global_genus)$cont$importance), las = 3, ylab = 'eigenvalues')
+
+# Permutation test of the results
+anova.cca(RDA_global_genus,step=1000,permutations=1000,parallel=40)
+#anova.cca(RDA_global_genus,by="axis",step=1000,permutations=1000,parallel=40)
+anova.cca(RDA_global_genus,by="term",step=1000,permutations=1000,parallel=40)
+
+# Explanatory power of the variables included
+Runadj <- RsquareAdj(RDA_global_genus)$r.squared
+Radj <- RsquareAdj(RDA_global_genus)$adj.r.squared
+Radj
+
+# Plotting the results using scaling 1 
+plot(RDA_global_genus,scaling=1,main="Triplot RDA - scaling 1 ",type = "text",display=c("sp","wa","cn"))
+plot(RDA_global_genus,scaling=1,main="Triplot - scaling 1 ",type = "text",display=c("sp","lc","cn"))
+
+# Extract values to plot with ggplot2
+RDA_global_genus_scores_scaling1 <- data.frame(scores(RDA_global_genus,choices=1:2,scaling=1,display="sites"))
+RDA_global_genus_var_scaling1 <- data.frame(scores(RDA_global_genus,choices=1:2,scaling=1,display="species"))
+RDA_global_genus_var_scaling1_distance <- mutate(RDA_global_genus_var_scaling1,Dist=sqrt(RDA_global_genus_var_scaling1[,1]^2+RDA_global_genus_var_scaling1[,2]^2),Abundance=rowSums(phylobj.filter.genus.sampleselect))
+RDA_global_genus_constraint_scaling1 <- data.frame(summary(RDA_global_genus)$centroids)
+rownames(RDA_global_genus_constraint_scaling1) <- gsub("Type","Type ",rownames(RDA_global_genus_constraint_scaling1))
+rownames(RDA_global_genus_constraint_scaling1) <- gsub("Fertility","Fertility ",rownames(RDA_global_genus_constraint_scaling1))
+rownames(RDA_global_genus_constraint_scaling1) <- gsub("ID","ID ",rownames(RDA_global_genus_constraint_scaling1))
+
+# Plotting the results using scaling 2 
+plot(RDA_global_genus,scaling=2,main="Triplot RDA - scaling 2 ",type = "text",display=c("sp","wa","cn"))
+plot(RDA_global_genus,scaling=2,main="Triplot - scaling 2 ",type = "text",display=c("sp","lc","cn"))
+
+# Extract values to plot with ggplot2
+RDA_global_genus_scores_scaling2 <- data.frame(scores(RDA_global_genus,choices=1:2,scaling=2,display="sites"))
+RDA_global_genus_var_scaling2 <- data.frame(scores(RDA_global_genus,choices=1:2,scaling=2,display="species"))
+RDA_global_genus_var_scaling2_distance <- mutate(RDA_global_genus_var_scaling2,Dist=sqrt(RDA_global_genus_var_scaling2[,1]^2+RDA_global_genus_var_scaling2[,2]^2),Abundance=rowSums(phylobj.filter.genus.sampleselect))
+RDA_global_genus_constraint_scaling2 <- data.frame(summary(RDA_global_genus)$centroids)
+rownames(RDA_global_genus_constraint_scaling2) <- gsub("Type","Type ",rownames(RDA_global_genus_constraint_scaling2))
+rownames(RDA_global_genus_constraint_scaling2) <- gsub("Fertility","Fertility ",rownames(RDA_global_genus_constraint_scaling2))
+rownames(RDA_global_genus_constraint_scaling2) <- gsub("ID","ID ",rownames(RDA_global_genus_constraint_scaling2))
+```
+  
+```{r Global-dbRDA-at-genus-level-plotting,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.width=10,fig.height=8,fig.cap="\\label{fig:fig23} Global redundancy analysis type II scaling correlation triplot with the response variables (most abundant taxa) indicated in red and the different factors represented by centroid factor levels in blue. All factors in the global model significantly contributed to the variation in relative microbial community composition, albeit the negligible explanatory power (R^2^ adjusted) of the Sample type and Fertility status."}
+# Most abundant taxa to plot
+select_top_taxa <- RDA_global_genus_var_scaling2_distance$Abundance
+taxaforplot <- tibble::rownames_to_column(data.frame(RDA_global_genus_var_scaling2_distance))
+taxaforplot$rowname <- gsub("genus","",taxaforplot$rowname)
+taxaforplot <- as.data.frame(taxaforplot  %>% top_n(15,select_top_taxa))
+rownames(taxaforplot) <- taxaforplot[,1]
+taxaforplot <- taxaforplot[,-1] 
+
+# Centroids to plot
+centroidsforplot <- RDA_global_genus_constraint_scaling2[c(1:4),]
+
+# ggplot visualization
+RDA_global_genus_plot <- RDAplot(RDA_global_genus_scores_scaling2,taxaforplot,centroidsforplot,metadata.sampleselect$IDunique,ID_14,metadata.sampleselect$IDunique,ID_14,"Subject",Dim1,Dim2,1,4)
+
+# Add explanatory power 
+RDA_global_genus_plot <- RDA_global_genus_plot + geom_text(aes(x=0.8,y=Inf,vjust=1, hjust=0),label=paste("R[adj~ID]^2","==",round(genus_varp_ID,2)),parse=TRUE)
+RDA_global_genus_plot <- RDA_global_genus_plot + geom_text(aes(x=0.8,y=Inf,vjust=2, hjust=0),label=paste("R[adj~Fertility]^2","==",round(genus_varp_Fertility,3)),parse=TRUE)
+RDA_global_genus_plot <- RDA_global_genus_plot + geom_text(aes(x=0.8,y=Inf,vjust=3, hjust=0),label=paste("R[adj~Type]^2","==",round(genus_varp_Type,3)),parse=TRUE)
+RDA_global_genus_plot
+```
+  
+```{r Global-dbRDA-at-OTU-and-genus-level-plotting,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.width=10,fig.height=8,fig.cap="\\label{fig:fig24} Global redundancy analysis type II scaling correlation triplot with the response variables (most abundant OTUs resp. genera) indicated in red and the different factors represented by centroid factor levels in blue. All factors in the global model significantly contributed to the variation in relative microbial community composition, albeit the negligible explanatory power (R^2^ adjusted) of the Sample type and Fertility status."}
+
+tiff("./Figures_Kim/globalRDA_OTU.tiff",width=6*dpi,height=6*dpi,res=dpi,compression="lzw")
+RDA_global_OTU_plot
+dev.off()
+
+tiff("./Figures_Kim/globalRDA_GENUS.tiff",width=6*dpi,height=6*dpi,res=dpi,compression="lzw")
+RDA_global_genus_plot
+dev.off()
+
+RDA_global_legend <- get_legend(RDA_global_OTU_plot)
+
+plot_grid(plot_grid(RDA_global_OTU_plot+theme(legend.position = "none"),RDA_global_genus_plot+theme(legend.position = "none"),ncol=2,rel_widths = c(0.5,0.5),align="h",axis="2",labels=c("OTU","Genus",""),label_x = 0.5),RDA_global_legend,nrow=2,rel_heights = c(0.8,0.2))
+
+tiff("./Figures_Kim/globalRDA_GENUS_OTU.tiff",width=12*dpi,height=6*dpi,res=dpi,compression="lzw")
+plot_grid(plot_grid(RDA_global_OTU_plot+theme(legend.position = "none"),RDA_global_genus_plot+theme(legend.position = "none"),ncol=2,rel_widths = c(0.5,0.5),align="h",axis="2",labels=c("OTU","Genus",""),label_x = 0.5),RDA_global_legend,nrow=2,rel_heights = c(0.8,0.2))
+dev.off()
+```
+  
+  
+```{r Partial-dbRDA-at-OTU-level,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.show="hide"}
+# Formula RDA to test 
+RDA_partial_OTU <- vegan::capscale(t(phylobj.filter.OTU.sampleselect)~Type+Condition(IDunique),dist="jaccard",data=metadata.sampleselect) 
+RDA_partial_OTU 
+summary(RDA_partial_OTU)
+coef(RDA_partial_OTU)  
+Dim1 <- round(summary(RDA_partial_OTU)$cont$importance[2,1]*100,2) # concont is the constrained fraction of the eigenvalues 
+Dim2 <- round(summary(RDA_partial_OTU)$cont$importance[2,2]*100,2) # concont is the constrained fraction of the eigenvalues 
+
+barplot(summary(RDA_partial_OTU)$cont$importance[1,], names = colnames(summary(RDA_partial_OTU)$cont$importance), las = 3, ylab = 'eigenvalues')
+
+# Permutation test of the results
+p <- anova.cca(RDA_partial_OTU,step=1000,permutations=1000,parallel=40)
+#anova.cca(RDA_partial_OTU,by="axis",step=1000,permutations=1000,parallel=40)
+anova.cca(RDA_partial_OTU,by="term",step=1000,permutations=1000,parallel=40)
+p_partial_OTU <- anova.cca(RDA_partial_OTU,by="term",step=1000,permutations=1000,parallel=40)$`Pr`[1]
+
+# Explanatory power of the variables included
+Runadj <- RsquareAdj(RDA_partial_OTU)$r.squared
+Radj <- RsquareAdj(RDA_partial_OTU)$adj.r.squared
+Radj_OTU <- Radj
+
+# Plotting the results using scaling 1 
+plot(RDA_partial_OTU,scaling=1,main="Triplot RDA - scaling 1 ",type = "text",display=c("sp","wa","cn"))
+plot(RDA_partial_OTU,scaling=1,main="Triplot - scaling 1 ",type = "text",display=c("sp","lc","cn"))
+
+# Extract values to plot with ggplot2
+RDA_partial_OTU_scores_scaling1 <- data.frame(scores(RDA_partial_OTU,choices=1:2,scaling=1,display="sites"))
+RDA_partial_OTU_var_scaling1 <- data.frame(scores(RDA_partial_OTU,choices=1:2,scaling=1,display="species"))
+RDA_partial_OTU_var_scaling1_distance <- mutate(RDA_partial_OTU_var_scaling1,Dist=sqrt(RDA_partial_OTU_var_scaling1[,1]^2+RDA_partial_OTU_var_scaling1[,2]^2),Abundance=rowSums(phylobj.filter.OTU.sampleselect))
+RDA_partial_OTU_constraint_scaling1 <- data.frame(summary(RDA_partial_OTU)$centroids)
+rownames(RDA_partial_OTU_constraint_scaling1) <- gsub("Sporebiotics","",rownames(RDA_partial_OTU_constraint_scaling1))
+
+# Plotting the results using scaling 2 
+plot(RDA_partial_OTU,scaling=2,main="Triplot RDA - scaling 2 ",type = "text",display=c("sp","wa","cn"))
+plot(RDA_partial_OTU,scaling=2,main="Triplot - scaling 2 ",type = "text",display=c("sp","lc","cn"))
+
+# Extract values to plot with ggplot2
+RDA_partial_OTU_scores_scaling2 <- data.frame(scores(RDA_partial_OTU,choices=1:2,scaling=2,display="sites"))
+RDA_partial_OTU_var_scaling2 <- data.frame(scores(RDA_partial_OTU,choices=1:2,scaling=2,display="species"))
+RDA_partial_OTU_var_scaling2_distance <- mutate(RDA_partial_OTU_var_scaling2,Dist=sqrt(RDA_partial_OTU_var_scaling2[,1]^2+RDA_partial_OTU_var_scaling2[,2]^2),Abundance=rowSums(phylobj.filter.OTU.sampleselect))
+RDA_partial_OTU_constraint_scaling2 <- data.frame(summary(RDA_partial_OTU)$centroids)
+rownames(RDA_partial_OTU_constraint_scaling2) <- gsub("Sporebiotics","Sporebiotics ",rownames(RDA_partial_OTU_constraint_scaling2))
+```
+  
+```{r Partial-dbRDA-at-OTU-level-plotting,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.width=8,fig.height=8,fig.cap="\\label{fig:fig25} Partial redundancy analysis type II scaling correlation triplot with the response variables (most abundant OTUs) indicated in red and the Sample type and Fertility status represented by centroid factor levels in blue. Sample type and Fertility status significantly contributes to the conditional variation (on the Subject) in relative microbial community composition."}
+# Most abundant taxa to plot
+select_top_taxa <- RDA_partial_OTU_var_scaling2_distance$Abundance
+taxaforplot <- tibble::rownames_to_column(data.frame(RDA_partial_OTU_var_scaling2_distance))
+taxaforplot$rowname <- gsub("OTU","",taxaforplot$rowname)
+taxaforplot <- as.data.frame(taxaforplot  %>% top_n(10,select_top_taxa))
+rownames(taxaforplot) <- taxaforplot[,1]
+taxaforplot <- taxaforplot[,-1] 
+rownames(taxaforplot) <- gsub("Otu[0]+","OTU\\",rownames(taxaforplot))
+
+# ggplot visualization
+RDA_TypeFertility_OTU_plot <- RDAplot(RDA_partial_OTU_scores_scaling2,taxaforplot,RDA_partial_OTU_constraint_scaling2,metadata.sampleselect$IDunique,rep("#000000",14),metadata.sampleselect$TypeFertility,FertilityType_4,"Type",Dim1,Dim2,4,2) 
+
+RDA_TypeFertility_OTU_plot <- RDA_TypeFertility_OTU_plot + geom_text(aes(x=-Inf,y=Inf,vjust=1, hjust=0),label=paste("R[adj~Sample~type]^2","==",round(Radj_OTU,2)),parse=TRUE)
+RDA_TypeFertility_OTU_plot <- RDA_TypeFertility_OTU_plot + geom_text(aes(x=-Inf,y=Inf,vjust=2, hjust=0),label=paste("R[adj~Conditional]^2","==",round(OTU_varp$part$fract[3,3],2)),parse=TRUE)
+#RDA_TypeFertility_OTU_plot
+```
+
+```{r Partial-dbRDA-at-genus-level,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.show="hide"}
+# 0% variance explained by fertility 
+# Formula RDA to test 
+RDA_partial_genus <- vegan::capscale(t(phylobj.filter.genus.sampleselect)~Type+Condition(IDunique),dist="jaccard",data=metadata.sampleselect) 
+RDA_partial_genus 
+summary(RDA_partial_genus)
+coef(RDA_partial_genus)  
+Dim1 <- round(summary(RDA_partial_genus)$cont$importance[2,1]*100,2) # concont is the constrained fraction of the eigenvalues 
+Dim2 <- round(summary(RDA_partial_genus)$cont$importance[2,2]*100,2) # concont is the constrained fraction of the eigenvalues 
+
+barplot(summary(RDA_partial_genus)$cont$importance[1,], names = colnames(summary(RDA_partial_genus)$cont$importance), las = 3, ylab = 'eigenvalues')
+
+# Permutation test of the results
+p <- anova.cca(RDA_partial_genus,step=1000,permutations=1000,parallel=40)
+#anova.cca(RDA_partial_genus,by="axis",step=1000,permutations=1000,parallel=40)
+anova.cca(RDA_partial_genus,by="term",step=1000,permutations=1000,parallel=40)
+p_partial_genus <- anova.cca(RDA_partial_genus,by="term",step=1000,permutations=1000,parallel=40)$`Pr`[1]
+
+# Explanatory power of the variables included
+Runadj <- RsquareAdj(RDA_partial_genus)$r.squared
+Radj <- RsquareAdj(RDA_partial_genus)$adj.r.squared
+Radj_genus <- Radj
+
+# Plotting the results using scaling 1 
+plot(RDA_partial_genus,scaling=1,main="Triplot RDA - scaling 1 ",type = "text",display=c("sp","wa","cn"))
+plot(RDA_partial_genus,scaling=1,main="Triplot - scaling 1 ",type = "text",display=c("sp","lc","cn"))
+
+# Extract values to plot with ggplot2
+RDA_partial_genus_scores_scaling1 <- data.frame(scores(RDA_partial_genus,choices=1:2,scaling=1,display="sites"))
+RDA_partial_genus_var_scaling1 <- data.frame(scores(RDA_partial_genus,choices=1:2,scaling=1,display="species"))
+RDA_partial_genus_var_scaling1_distance <- mutate(RDA_partial_genus_var_scaling1,Dist=sqrt(RDA_partial_genus_var_scaling1[,1]^2+RDA_partial_genus_var_scaling1[,2]^2),Abundance=rowSums(phylobj.filter.genus.sampleselect))
+RDA_partial_genus_constraint_scaling1 <- data.frame(summary(RDA_partial_genus)$centroids)
+rownames(RDA_partial_genus_constraint_scaling1) <- gsub("Sporebiotics","",rownames(RDA_partial_genus_constraint_scaling1))
+
+# Plotting the results using scaling 2 
+plot(RDA_partial_genus,scaling=2,main="Triplot RDA - scaling 2 ",type = "text",display=c("sp","wa","cn"))
+plot(RDA_partial_genus,scaling=2,main="Triplot - scaling 2 ",type = "text",display=c("sp","lc","cn"))
+
+# Extract values to plot with ggplot2
+RDA_partial_genus_scores_scaling2 <- data.frame(scores(RDA_partial_genus,choices=1:2,scaling=2,display="sites"))
+RDA_partial_genus_var_scaling2 <- data.frame(scores(RDA_partial_genus,choices=1:2,scaling=2,display="species"))
+RDA_partial_genus_var_scaling2_distance <- mutate(RDA_partial_genus_var_scaling2,Dist=sqrt(RDA_partial_genus_var_scaling2[,1]^2+RDA_partial_genus_var_scaling2[,2]^2),Abundance=rowSums(phylobj.filter.genus.sampleselect))
+RDA_partial_genus_constraint_scaling2 <- data.frame(summary(RDA_partial_genus)$centroids)
+rownames(RDA_partial_genus_constraint_scaling2) <- gsub("Sporebiotics","Sporebiotics ",rownames(RDA_partial_genus_constraint_scaling2))
+```
+  
+```{r Partial-dbRDA-at-genus-level-plotting,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.width=8,fig.height=8,fig.cap="\\label{fig:fig26} Partial redundancy analysis type II scaling correlation triplot with the response variables (most abundant genus) indicated in red and the Sample type represented by centroid factor levels in blue. Sample type significantly contributes to the conditional variation (on the Subject) in relative microbial community composition."}
+# Most abundant taxa to plot
+select_top_taxa <- RDA_partial_genus_var_scaling2_distance$Abundance
+taxaforplot <- tibble::rownames_to_column(data.frame(RDA_partial_genus_var_scaling2_distance))
+taxaforplot$rowname <- gsub("genus","",taxaforplot$rowname)
+taxaforplot <- as.data.frame(taxaforplot  %>% top_n(10,select_top_taxa))
+rownames(taxaforplot) <- taxaforplot[,1]
+taxaforplot <- taxaforplot[,-1] 
+rownames(taxaforplot) <- gsub("genus[0]+","genus\\",rownames(taxaforplot))
+
+# ggplot visualization
+RDA_TypeFertility_genus_plot <- RDAplot(RDA_partial_genus_scores_scaling2,taxaforplot,RDA_partial_genus_constraint_scaling2,metadata.sampleselect$IDunique,rep("#000000",14),metadata.sampleselect$TypeFertility,FertilityType_4,"Type",Dim1,Dim2,4,constraintlevel=2)
+
+RDA_TypeFertility_genus_plot <- RDA_TypeFertility_genus_plot + geom_text(aes(x=Inf,y=Inf,vjust=1, hjust=1),label=paste("R[adj~Sample~type]^2","==",round(Radj_genus,2)),parse=TRUE)
+RDA_TypeFertility_genus_plot <- RDA_TypeFertility_genus_plot + geom_text(aes(x=Inf,y=Inf,vjust=2, hjust=1),label=paste("R[adj~Conditional]^2","==",round(genus_varp$part$fract[3,3],2)),parse=TRUE)
+#RDA_TypeFertility_genus_plot
+```
+
+```{r Partial-dbRDA-at-OTU-and-genus-level-plotting,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.width=8,fig.height=8,fig.cap="\\label{fig:fig27} Partial redundancy analysis type II scaling correlation triplot with the response variables (most abundant OTUs resp. genera) indicated in red and Sample type represented by centroid factor levels in blue. Sample type significantly contributes to the conditional (on the Subject) variation in relative microbial community composition."}
+tiff("./Figures_Kim/partialRDA_OTU.tiff",width=6*dpi,height=6*dpi,res=dpi,compression="lzw")
+RDA_TypeFertility_OTU_plot
+dev.off()
+
+tiff("./Figures_Kim/partialRDA_GENUS.tiff",width=6*dpi,height=6*dpi,res=dpi,compression="lzw")
+RDA_TypeFertility_genus_plot
+dev.off()
+
+RDA_partial_legend <- get_legend(RDA_TypeFertility_OTU_plot)
+
+plot_grid(plot_grid(RDA_TypeFertility_OTU_plot+theme(legend.position = "none"),RDA_TypeFertility_genus_plot+theme(legend.position = "none"),ncol=2,rel_widths = c(0.5,0.5),align="h",axis="2",labels=c("OTU","Genus",""),label_x = 0.5),RDA_partial_legend,nrow=2,rel_heights = c(0.8,0.2))
+
+tiff("./Figures_Kim/partialRDA_GENUS_OTU.tiff",width=12*dpi,height=6*dpi,res=dpi,compression="lzw")
+plot_grid(plot_grid(RDA_TypeFertility_OTU_plot+theme(legend.position = "none"),RDA_TypeFertility_genus_plot+theme(legend.position = "none"),ncol=2,rel_widths = c(0.5,0.5),align="h",axis="2",labels=c("OTU","Genus",""),label_x = 0.5),RDA_partial_legend,nrow=2,rel_heights = c(0.8,0.2))
+dev.off()
+```
+
+### Interpretation    
+Variation partitioning (Figure \@ref(fig:varpart-at-OTU-and-genus-level-plotting)) identified the factor subject as the main driver of the OTU level microbial community variation with a significant (p= `r round(OTU_varp_ID_sign_p,4)`) contribution of `r round(OTU_varp_ID*100,2)` %. The explanatory power (R^2^ adjusted) of the Sample type (`r round(OTU_varp_Type*100,2)` %, p= `r round(OTU_varp_Type_sign_p,2)`) and Fertility status (`r round(OTU_varp_Fertility*100,2)`%, p= `r round(OTU_varp_Fertility_sign_p,2)`) is negligible and not significant. 
+
+At the genus level, inter-individual variability explained only `r round(genus_varp_ID*100,2)` % of the variation in the microbial community composition (p= `r round(genus_varp_ID_sign_p,2)`). In contrast, a larger fraction of the variation (`r round(genus_varp_Type*100,2)` %, p= `r round(genus_varp_Type_sign_p,2)`) could be attributed to differences between the endometrial and vaginal sample types. Fertility status had no significant impact on the genus level microbiota composition (`r round(genus_varp_Fertility*100,2)`%, p= `r round(genus_varp_Fertility_sign_p,2)`) (Figure \@ref(fig:varpart-at-OTU-and-genus-level-plotting)). 
+
+The trends are confirmed and visualized by combining all factors in a global RDA. The largest fraction of the variation can be attributed to inter-individual differences (R^2^ adjusted= `r round(OTU_varp_ID*100,2)`%) and EF and RIF samples cluster by subject ID (Figure \@ref(fig:Global-dbRDA-at-OTU-and-genus-level-plotting)). Three community types are apparent. Individuals 2, 10 and 12 have a reproductive tract community dominated by OTU2 and to a lesser extent OTU 6. OTU 1 and 10 prevail in the endometrial and vaginal microbiota of individuals 3, 4, 8, 13 and 14. The microbial community in subjects 1, 5, 9 and 11 is enriched in a number of OTUs including OTU5, OTU4, OTU3, OTU9, OTU7, OTU8, OTU14, OTU16, OTU18. 
+
+At the genus level, the individual based grouping is preserved for some individuals (2,6,10,14) with a dominating _Lactobacillus_ signature and subject 5 marked by a high Candidatus Lachnocurva, _Garnerella_ and _Prevotella_ presence, while other individuals are no longer aggregated (1,3,4,7,8,9,11,13). Instead, the endometrial fluid and vaginal secretion samples of those individuals are distinguished from one another. The separation becomes more clear in a partial distance based redundancy analysis conditional on the inter-individual variability (Figure \@ref(fig:Partial-dbRDA-at-OTU-and-genus-level-plotting)). As the explanatory power of the fertility status constraint was 0, a partial model containing only the Sample type was examined. The effect size (R^2^ adjusted) of the Sample type amounted to `r round(Radj_genus,2)*100`% and was significant (p= `r round(p_partial_genus,3)`). A similar significant (p= `r round(p_partial_OTU,2)`) trend was observed at the OTU level (R^2^ adjusted= `r round(Radj_OTU,2)*100`%). _Lactobacillus_ related OTUs (OTU1,OTU2,OTU5,OTU6), _Candidatus Lachnocurva vaginae_ OTU3 and _Gardnerella_ OTU4 are associated with the vaginal samples. _Cutibacterium_ OTU9, _Microbacterium_ OTU10 and _Streptococcus_ OTU14 are more characteristic of the endometerial samples. _Micrococcus_ OTU 18 occurs at a higher abundance in the EF sample from RIF subject 11.
+
+<!-- OTU _Lactobacillus_ OTU6 is more abundant in vaginal and endometrial fluid (EF) -->
+<!-- samples of women with Repeated Implantation Failure (RIF). -->
+
+Note: The above trends can also be observed when inspecting the OTU and genus bargraphs. 
+
+## Sparse Partial Least Squares Discriminant Analysis (sPLS-DA)
+
+### Materials and methods
+Sparse Partial Least Squares Discriminant Analysis (sPLS-DA) was performed to select the features most predictive for the class membership of samples with respect to the Sample type (EF-VS), which was identified to contribute significantly to the variation in community composition in a partial dbRDA. The R package mixOmics`r packageVersion("mixOmics")` was used with some adjustments to cope with the compositional nature of microbial community data (MixMC). A Centered Log Ratio transformation (CLR) was applied on the raw (unnormalized) pre-filtered data with an offset of 1 [@LeCao2016]. 
+
+Considering the inter-individual differences, a repeated measurement design (a subject was repeatedly sampled to obtain EF and VS) was incorporated into the sPLS-DA model, analogous to the partial dbRDA. The number of components and taxonomic features (at OTU resp. genus level) to include in the model was assessed based on the classification error rates obtained
+after a five-fold cross-validation. The final sPLS-DA ordination, showing the differences between the Sample types, was displayed in 2D (ggplot 2 `r packageVersion("ggplot2")`). The CLR transformed abundances of the most predictive taxa were represented in a heatmap (ComplexHeatmap `r packageVersion("ComplexHeatmap")`), alongside a histogram of effect sizes (loadings) denoting the importance of the most discriminative OTUs and genera in distinguishing EF and VS samples. A color fill indicates the sample group with the highest mean abundance. 
+
+### Results
+
+```{r sPLS-DA-ordination-plotting-function,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi}   
+  sPLSDAplot <- function(PLSDAcoordinates,label,labelcolor,colordesign,colorvector,designfactorname,Dim1,Dim2,pointsize,ellipse=FALSE){ 
+  plotobj <- ggplot(PLSDAcoordinates)+geom_point(aes(x=comp1,y=comp2,color=colordesign),size=pointsize,alpha=0.5) 
+  plotobj <- plotobj + scale_colour_manual(values=colorvector,name=designfactorname) + xlab(paste('RDA Dim1',Dim1,'%',sep=" ")) + ylab(paste('RDA Dim2',Dim2,'%',sep=" ")) 
+  plotobj <- papertheme(plotobj,sizeselect=10) 
+  plotobj <- plotobj + geom_text_repel(data=PLSDAcoordinates,aes(x=comp1,y=comp2,label=label),color=mapvalues(label,from=levels(label),to=labelcolor),size=3,alpha=1,show.legend=FALSE,max.overlaps=30)
+  #plotobj <- plotobj + geom_text(data=RDAscores,aes(x=CAP1,y=CAP2,label=colordesign,color=colordesign),size=3,alpha=1,show.legend=FALSE) + theme(legend.position = "none")
+  if(ellipse==TRUE){plotobj <- plotobj + stat_ellipse(aes(x=comp1,y=comp2,color=colordesign),type="norm",level=0.95,show.legend=FALSE,linetype = 2)}
+  plotobj <- plotobj + guides(colour=guide_legend(nrow=2))
+  return(plotobj)
+ }
+```     
+
+```{r Input-MixMC-OTU-raw-data-with-offset-1,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.width=8,fig.height=8}
+# Note: as the CLR already divides each count by the geometric mean, it does not make a difference whether we apply TSS + CLR, or CLR on the count (filtered) data directly
+# Add an offset to the data
+MixMCdata <- data.frame(otu_table(phylobj.filter)+1)
+# Verify that no zeroes are present in the data
+sum(which(MixMCdata  == 0))
+# Look at read counts in all samples
+barplot(colSums(MixMCdata))
+
+# function to perform additional pre-filtering according to Qiime standards
+# samples in rows and taxa in columns
+low.count.removal = function(
+                        data, # OTU count data frame of size n (sample) x p (OTU)
+                        percent=0.01 # cutoff chosen
+                        ){
+    keep.otu = which(colSums(data)*100/(sum(colSums(data))) > percent)
+    data.filter = data[,keep.otu]
+    return(list(data.filter = data.filter, keep.otu = keep.otu))
+}
+MixMCdata <- low.count.removal(t(MixMCdata), percent=0.01)$data.filter
+
+# Either logratio transform with an external function (no need to add an offset if this was already done manually). This function can start from either proportions (in which case you need to provide a TINY offset) or raw data. LCR can also be obtained in the PCA and sPLS-DA functions right away starting from the raw data 
+MixMCdata.clr <- logratio.transfo(MixMCdata, logratio = 'CLR', offset = 0) 
+class(MixMCdata.clr) <- "matrix"
+
+# Input to the Mixomics models
+X_otu <- MixMCdata.clr
+Y_otu <- metadata.sampleselect$Type
+sample <- metadata.sampleselect$IDunique
+```
+
+```{r PCA-MixMC-OTU}
+# On the already transformed data 
+pca.result <- pca(X_otu,ncomp=10, multilevel = sample)
+#=  On the offseted data 
+# pca.result <- pca(t(MixMCdata), logratio = 'CLR')
+
+# Plot the results 
+plot(pca.result)
+plotIndiv(pca.result, group = metadata.sampleselect$TypeFertility, title = 'PCA on CLR transformed offsetted data',col.per.group=FertilityType_4)
+plotVar(pca.result, comp = c(1, 2),var.names = list(tax_table(phylobj.filter)[,"Class"]),cutoff = 0.5,cex = 2,title = 'PCA comp 1 - 2')
+```
+
+```{r sPLS-DA-MixMC-OTU,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.width=8,fig.height=8}
+## Initial model 
+plsda.result <- plsda(X_otu,Y_otu, ncomp = 10,multilevel=sample) 
+# equivalent to plsda(MiX_otuMCdata,metadata.sampleselect$TY_otupeFertilitY_otu, ncomp = 10, logratio = 'CLR') 
+
+## Select optimal number of components 
+set.seed(2543) 
+perf.plsda.result <- perf(plsda.result, validation = "Mfold", folds = 5,progressBar=FALSE,auc=TRUE,nrepeat=100) 
+plot(perf.plsda.result, col = color.mixo(5:7), sd = TRUE, legend.position = "horizontal") # 3 components are ideal for the PLS-DA model
+## Optimal PLS-DA model
+plsda.result <- plsda(X_otu,Y_otu, ncomp = 3,multilevel=sample)
+plotIndiv(plsda.result, group = Y_otu, title = 'PLS-DA on CLR transformed offsetted data',ellipse=FALSE,comp=c(1,2),col.per.group=Type_2)
+plotIndiv(plsda.result, group = Y_otu, title = 'PLS-DA on CLR transformed offsetted data',ellipse=FALSE,comp=c(1,3),col.per.group=Type_2)
+plotIndiv(plsda.result, group = Y_otu, title = 'PLS-DA on CLR transformed offsetted data',ellipse=FALSE,comp=c(2,3),col.per.group=Type_2)
+
+## Select number of variables to retain 
+list.keepX_otu <- c(1:ncol(X_otu))
+tune.splsda <- tune.splsda(X_otu,Y_otu, ncomp = 3, validation = 'Mfold', folds = 5,progressBar = FALSE, dist = 'max.dist', measure = "BER",test.keepX = list.keepX_otu,nrepeat = 100,cpus=40,multilevel=sample)
+tune.splsda
+plot(tune.splsda)
+error <- tune.splsda$error.rate
+ncomp <- tune.splsda$choice.ncomp$ncomp
+select.keepX_otu <- tune.splsda$choice.keepX[1:2]  
+select.keepX_otu
+
+# Final model
+splsda_final.result <- splsda(X_otu, Y_otu, ncomp = 2, keepX = select.keepX_otu, multilevel = sample)
+plotIndiv(splsda_final.result, group = Y_otu, title = 'PLS-DA on CLR transformed offsetted data',ellipse=TRUE,col.per.group=Type_2)
+
+plotLoadings(splsda_final.result , comp = 1, title = 'Loadings on comp 1',contrib = 'max', method = 'mean')
+plotLoadings(splsda_final.result , comp = 2, title = 'Loadings on comp 2',contrib = 'max', method = 'mean')
+
+cim(splsda_final.result)
+
+plotVar(splsda_final.result)
+
+## check performance of final model
+set.seed(40) 
+perf.splsda_final <- perf(splsda_final.result,validation = "Mfold",folds = 5,dist = 'max.dist', nrepeat = 100,progressBar = FALSE)
+perf.splsda_final$error.rate
+plot(perf.splsda_final, col = color.mixo(5))
+## check significance of final model
+MixMCdata.clr_df_otu <- data.frame(MixMCdata.clr)
+MixMCdata.clr_df_otu <- apply(MixMCdata.clr_df_otu,2,function(X_otu) as.numeric(as.character(X_otu)))
+# MVA.test(MiX_otuMCdata.clr_df,metadata.sampleselect$TY_otupeFertilitY_otu, ncomp = ncomp,nperm=100) not working
+
+
+## EXtract results for ggplots
+attributes(splsda_final.result$loadings)
+
+### Loadings
+# splsda_final.result$loadings
+Loadings1 <- selectVar(splsda_final.result, comp = 1)$value
+Loadings1stab <- perf.splsda_final$features$stable[[1]][rownames(Loadings1)] 
+
+Loadings2 <- selectVar(splsda_final.result, comp = 2)$value
+rownames(Loadings2) <- selectVar(splsda_final.result, comp = 2)$name
+Loadings2stab <- perf.splsda_final$features$stable[[2]][rownames(Loadings2)] 
+
+#Sampleclass <- c(Loadings1$value.var,Loadings2$value.var)
+#Sampleclass[Sampleclass<0] <- "VS"
+#Sampleclass[Sampleclass!="VS"] <- "EF"
+
+Loadings_otu <- data.frame(taxaselect=c(rownames(Loadings1),rownames(Loadings2)) ,Loadings=c(Loadings1$value.var,Loadings2$value.var),Loadingsstab=c(Loadings1stab,Loadings2stab),comp=c(rep("comp1",nrow(Loadings1)),rep("comp2",nrow(Loadings2))))
+Loadings_otu
+
+## Coordinates 
+coordinates_otu <- as.data.frame(splsda_final.result$variates$X)
+
+## Dimensions 
+splsda_final.result$explained_variance$X
+Dim1_otu <- round(splsda_final.result$explained_variance$X[1]*100,2)
+Dim2_otu <- round(splsda_final.result$explained_variance$X[2]*100,2)
+```
+
+```{r sPLS-DA-ordination-ggplot-OTU,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi}   
+sPLSotu <- sPLSDAplot(coordinates_otu,metadata.sampleselect$IDunique,rep("#000000",14),metadata.sampleselect$Type,Type_2,"Sample type",Dim1_otu,Dim2_otu,4,ellipse=TRUE)
+```     
+
+```{r Input-MixMC-genus-raw-data-with-offset-1,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.width=8,fig.height=8}
+# Note: as the CLR already divides each count by the geometric mean, it does not make a difference whether we apply TSS + CLR, or CLR on the count (filtered) data directly
+# Add an offset to the data
+MixMCdata <- data.frame(otu_table(phylobj.filter.genus)+1)
+# Verify that no zeroes are present in the data
+sum(which(MixMCdata  == 0))
+# Look at read counts in all samples
+barplot(colSums(MixMCdata))
+
+# function to perform additional pre-filtering according to Qiime standards
+# samples in rows and taxa in columns
+low.count.removal = function(
+                        data, # OTU count data frame of size n (sample) x p (OTU)
+                        percent=0.01 # cutoff chosen
+                        ){
+    keep.otu = which(colSums(data)*100/(sum(colSums(data))) > percent)
+    data.filter = data[,keep.otu]
+    return(list(data.filter = data.filter, keep.otu = keep.otu))
+}
+MixMCdata <- low.count.removal(t(MixMCdata), percent=0.01)$data.filter
+
+# Either logratio transform with an external function (no need to add an offset if this was already done manually). This function can start from either proportions (in which case you need to provide a TINY offset) or raw data. LCR can also be obtained in the PCA and sPLS-DA functions right away starting from the raw data 
+MixMCdata.clr <- logratio.transfo(MixMCdata, logratio = 'CLR', offset = 0) 
+class(MixMCdata.clr) <- "matrix"
+
+# Input to the Mixomics models
+X_genus <- MixMCdata.clr
+Y_genus <- metadata.sampleselect$Type
+sample <- metadata.sampleselect$IDunique
+```
+
+```{r PCA-MixMC-genus}
+# On the already transformed data 
+pca.result <- pca(X_genus,ncomp=10, multilevel = sample)
+#=  On the offseted data 
+# pca.result <- pca(t(MixMCdata), logratio = 'CLR')
+
+# Plot the results 
+plot(pca.result)
+plotIndiv(pca.result, group = metadata.sampleselect$TypeFertility, title = 'PCA on CLR transformed offsetted data',col.per.group=FertilityType_4)
+plotVar(pca.result, comp = c(1, 2),var.names = list(tax_table(phylobj.filter)[,"Class"]),cutoff = 0.5,cex = 2,title = 'PCA comp 1 - 2')
+```
+
+```{r sPLS-DA-MiX_genusMC-genus,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.width=8,fig.height=8}
+## Initial model 
+plsda.result <- plsda(X_genus,Y_genus, ncomp = 10,multilevel=sample) 
+# equivalent to plsda(MiX_genusMCdata,metadata.sampleselect$TY_genuspeFertilitY_genus, ncomp = 10, logratio = 'CLR') 
+
+## Select optimal number of components 
+set.seed(2543) 
+perf.plsda.result <- perf(plsda.result, validation = "Mfold", folds = 5,progressBar=FALSE,auc=TRUE,nrepeat=100) 
+plot(perf.plsda.result, col = color.mixo(5:7), sd = TRUE, legend.position = "horizontal") # 2 components are ideal for the PLS-DA model
+## Optimal PLS-DA model
+plsda.result <- plsda(X_genus,Y_genus, ncomp = 2,multilevel=sample)
+plotIndiv(plsda.result, group = Y_genus, title = 'PLS-DA on CLR transformed offsetted data',ellipse=FALSE,comp=c(1,2),col.per.group=Type_2)
+
+## Select number of variables to retain 
+list.keepX_genus <- c(1:ncol(X_genus))
+tune.splsda <- tune.splsda(X_genus,Y_genus, ncomp = 3, validation = 'Mfold', folds = 5,progressBar = FALSE, dist = 'max.dist', measure = "BER",test.keepX = list.keepX_genus,nrepeat = 100,cpus=40,multilevel=sample)
+tune.splsda
+plot(tune.splsda)
+error <- tune.splsda$error.rate
+ncomp <- tune.splsda$choice.ncomp$ncomp
+select.keepX_genus <- tune.splsda$choice.keepX[1:2]  
+select.keepX_genus
+
+# Final model
+splsda_final.result <- splsda(X_genus, Y_genus, ncomp = 2, keepX = select.keepX_genus, multilevel = sample)
+plotIndiv(splsda_final.result, group = Y_genus, title = 'PLS-DA on CLR transformed offsetted data',ellipse=TRUE,col.per.group=Type_2)
+
+plotLoadings(splsda_final.result , comp = 1, title = 'Loadings on comp 1',contrib = 'max', method = 'mean')
+plotLoadings(splsda_final.result , comp = 2, title = 'Loadings on comp 2',contrib = 'max', method = 'mean')
+
+cim(splsda_final.result)
+
+plotVar(splsda_final.result)
+
+## check performance of final model
+set.seed(40) 
+perf.splsda_final <- perf(splsda_final.result,validation = "Mfold",folds = 5,dist = 'max.dist', nrepeat = 100,progressBar = FALSE)
+perf.splsda_final$error.rate
+plot(perf.splsda_final, col = color.mixo(5))
+## check significance of final model
+MixMCdata.clr_df_genus <- data.frame(MixMCdata.clr)
+MixMCdata.clr_df_genus <- apply(MixMCdata.clr_df_genus,2,function(X_genus) as.numeric(as.character(X_genus)))
+# MVA.test(MiX_genusMCdata.clr_df,metadata.sampleselect$TY_genuspeFertilitY_genus, ncomp = ncomp,nperm=100) not working
+
+
+## EX_genustract results for ggplots
+splsda_final.result
+### Loadings
+# splsda_final.result$loadings
+Loadings1 <- selectVar(splsda_final.result, comp = 1)$value
+Loadings1stab <- perf.splsda_final$features$stable[[1]][rownames(Loadings1)] 
+
+Loadings2 <- selectVar(splsda_final.result, comp = 2)$value
+Loadings2stab <- perf.splsda_final$features$stable[[2]][rownames(Loadings2)] 
+
+Loadings_genus <- data.frame(taxaselect=c(rownames(Loadings1),rownames(Loadings2)) ,Loadings=c(Loadings1$value.var,Loadings2$value.var),Loadingsstab=c(Loadings1stab,Loadings2stab),comp=c(rep("comp1",nrow(Loadings1)),rep("comp2",nrow(Loadings2))))
+Loadings_genus
+
+## Coordinates 
+coordinates_genus <- as.data.frame(splsda_final.result$variates$X)
+
+## Dimensions 
+splsda_final.result$explained_variance$X
+Dim1_genus <- round(splsda_final.result$explained_variance$X[1]*100,2)
+Dim2_genus <- round(splsda_final.result$explained_variance$X[2]*100,2)
+```
+
+```{r sPLS-DA-ordination-ggplot-genus,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi}   
+sPLSgenus <- sPLSDAplot(coordinates_genus,metadata.sampleselect$IDunique,rep("#000000",14),metadata.sampleselect$Type,Type_2,"Sample type",Dim1_genus,Dim2_genus,4,ellipse=TRUE)
+```     
+
+```{r sPLSDA-at-OTU-and-genus-level-plotting,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.width=8,fig.height=8,fig.cap="Optimal sPLS-DA model, as determined by five-fold crossvalidation, retaining the taxonomic features most predictive of the Endometrial Fluid (EF) or Vaginal Secretions (VS)."}
+tiff("./Figures_Kim/sPLSDA_OTU.tiff",width=6*dpi,height=6*dpi,res=dpi,compression="lzw")
+sPLSotu
+dev.off()
+
+tiff("./Figures_Kim/sPLSDA_GENUS.tiff",width=6*dpi,height=6*dpi,res=dpi,compression="lzw")
+sPLSgenus
+dev.off()
+
+sPLSDA_legend <- get_legend(sPLSotu)
+
+plot_grid(plot_grid(sPLSotu+theme(legend.position = "none"),sPLSgenus+theme(legend.position = "none"),ncol=2,rel_widths = c(0.5,0.5),align="h",axis="2",labels=c("OTU","Genus",""),label_x = 0.5),sPLSDA_legend,nrow=2,rel_heights = c(0.8,0.2))
+
+tiff("./Figures_Kim/sPLSDA_GENUS_OTU.tiff",width=12*dpi,height=6*dpi,res=dpi,compression="lzw")
+plot_grid(plot_grid(sPLSotu+theme(legend.position = "none"),sPLSgenus+theme(legend.position = "none"),ncol=2,rel_widths = c(0.5,0.5),align="h",axis="2",labels=c("OTU","Genus",""),label_x = 0.5),sPLSDA_legend,nrow=2,rel_heights = c(0.8,0.2))
+dev.off()
+```
+
+```{r sPLS-DA-heatmap-plotting,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.width=20,fig.height=27,fig.cap="Heatmap displaying the most discriminative features characteristic of Endometrial Fluid (EF) or Vaginal Secretions (VS) identified by sPLS-DA. The Sample type in which the feature is on average most abundant is indicated by the fill colour in the effect size (sPLS-DA loadings) histogram side annotation."}   
+hmfontsize <- 12
+
+Loading <- rbind(Loadings_otu,Loadings_genus)
+Loading$level <- c(rep("OTU",nrow(Loadings_otu)),rep("Genus",nrow(Loadings_genus)))
+Loading <- data.frame(Loading %>% group_by(taxaselect) %>% top_n(1, abs(Loadings)))
+Loading <- Loading[order(Loading$level,-abs(Loading$Loadings)),]
+#Loading <- Loading %>% subset(comp=="comp1")
+CLRdata <- cbind(MixMCdata.clr_df_otu,MixMCdata.clr_df_genus)[,Loading$taxaselect]
+
+# component 1 was sufficient in both models
+
+splsda_heatmap <- CLRdata
+
+splsda_heatmap_aggregatedforcolor  <- aggregate(splsda_heatmap,by=list(metadata.sampleselect$Type),FUN=mean)
+sampleclass <- splsda_heatmap_aggregatedforcolor[1,]>splsda_heatmap_aggregatedforcolor[2,]
+sampleclass[which(splsda_heatmap_aggregatedforcolor[1,]>splsda_heatmap_aggregatedforcolor[2,])] <- "EF"
+sampleclass[sampleclass!="EF"] <- "VS"
+sampleclass <- sampleclass[,-1]
+
+splsda_heatmap_aggregated  <- aggregate(splsda_heatmap,by=list(metadata.sampleselect$Type,metadata.sampleselect$Fertility,metadata.sampleselect$TypeFertility),FUN=mean)
+
+splsda_heatmap_aggregated[,3] <- factor(splsda_heatmap_aggregated[,3],levels=c("EF_NF","EF_RIF","VS_NF","VS_RIF"))
+splsda_heatmap_aggregated[,2] <- factor(splsda_heatmap_aggregated[,2],levels=c("NF","RIF"))
+splsda_heatmap_aggregated[,1] <- factor(splsda_heatmap_aggregated[,1],levels=c("EF","VS"))
+
+splsda_heatmap_aggregated <- t(splsda_heatmap_aggregated)
+
+splsda_heatmap_TypeFertility <- splsda_heatmap_aggregated[3,] 
+splsda_heatmap_Fertility  <- splsda_heatmap_aggregated[2,] 
+splsda_heatmap_Type <- splsda_heatmap_aggregated[1,] 
+
+splsda_heatmap <- data.frame(level=Loading$level,splsda_heatmap_aggregated[-c(1:3),])
+splsda_heatmap$level <- factor(splsda_heatmap$level,levels=c("Genus","OTU"))
+splsda_heatmap <- tibble::rownames_to_column(splsda_heatmap)
+colnames(splsda_heatmap)[1] <- "Feature"
+splsda_heatmap$Feature <- gsub("Otu0+","OTU",splsda_heatmap$Feature )
+splsda_heatmap$effectsize <- abs(Loading$Loadings)
+splsda_heatmap$sampleclass <- sampleclass
+
+num <- 1+length(Loading$taxaselect)
+splsda_heatmap_num <- splsda_heatmap[,c(3:6)]
+splsda_heatmap_num <- apply(splsda_heatmap_num,2,as.numeric)
+rownames(splsda_heatmap_num) <- splsda_heatmap$Feature
+
+
+# Heatmap annotations
+rowsplit <- splsda_heatmap$level
+
+rowsideplot <- splsda_heatmap$effectsize
+rowsidefill <- splsda_heatmap$sampleclass
+rowsidefill <- mapvalues(rowsidefill,from=c("EF","VS"),to=Type_2) 
+names(rowsideplot) <- splsda_heatmap$Feature
+names(rowsidefill) <- splsda_heatmap$Feature
+
+colside1 <- splsda_heatmap_Type
+colside1fill <- mapvalues(colside1,from=unique(colside1),to=Type_2)
+names(colside1fill) <- colside1
+
+colside2 <- splsda_heatmap_Fertility
+colside2fill <- mapvalues(colside2,from=unique(colside2),to=Fertility_2)
+names(colside2fill) <- colside2
+
+colside3 <- splsda_heatmap_TypeFertility
+colside3fill <- mapvalues(colside3,from=unique(colside3),to=FertilityType_4)
+names(colside3fill) <- colside3
+
+ha=HeatmapAnnotation(Type=anno_block(gp = gpar(fill=colside1fill),labels=colside1),Fertility=anno_block(gp = gpar(fill=colside2fill),labels=colside2))
+#ha=HeatmapAnnotation(PPI=anno_empty(border=FALSE),Sporebiotics=anno_empty(border=FALSE),Subgroup=anno_block(gp = gpar(fill=colside3fill),labels=colside3))
+
+hb = HeatmapAnnotation("sPLS-DA effect size"=row_anno_barplot(rowsideplot,axis=TRUE,gp = gpar(fill = rowsidefill),axis_param = list(gp=gpar(fontsize = hmfontsize-5)),show_annotation_name = TRUE,  annotation_name_gp = gpar(fontsize = hmfontsize),width = unit(2, "cm")),which="row")
+hc = rowAnnotation(rn=anno_text(rownames(splsda_heatmap_num),gp=gpar(fontface = "italic",fontsize=hmfontsize)))
+
+# heatmap
+my_palette <- colorRamp2(c(-1,0,1,3,5,6),colors=c("black",'#FFEC8B',"yellow",'#ADD8E6',"#7EC0EE","blue"))
+
+hm_splsda <- Heatmap(splsda_heatmap_num,row_split=rowsplit,column_split= splsda_heatmap_TypeFertility,cluster_rows = FALSE,cluster_columns=FALSE,heatmap_legend_param =list(color_bar="continuous",title="CLR transformed counts",legend_direction = "horizontal",legend_width = unit(18,"cm"),title_gp=gpar(fontsize=hmfontsize,fontface="bold"),labels_gp=gpar(fontsize=hmfontsize)), show_row_names = TRUE,row_names_gp = gpar(fontface = "italic",fontsize=hmfontsize),show_column_names = FALSE,row_title_gp = gpar(fontface = "bold",fontsize=hmfontsize),show_heatmap_legend = FALSE, row_title_rot = 0,column_title = NULL, row_gap = unit(2, "mm"), column_gap = unit(c(1,3,1), "mm"),top_annotation=ha,col=my_palette) 
+
+leg <- Legend(col_fun = my_palette, title = "CLR transformed counts",direction="horizontal",legend_width = unit(5, "cm"),legend_height =  unit(3, "cm"),labels_gp=gpar(fontsize=hmfontsize),title_gp=gpar(fontsize=hmfontsize,fontface="bold"))
+
+hm_splsda <- draw(hm_splsda +hb +hc)  
+#decorate_annotation("rn", {gp = gpar(fontface = "plain")}, slice = 2)
+draw(leg, x = unit(0.9, "npc"), y = unit(1, "npc"), just = c("right", "top"))
+
+tiff("./Figures_Kim/sPLSDA_heatmap.tiff",width=6*dpi,height=6*dpi,res=dpi,compression="lzw")
+hm_splsda
+draw(leg, x = unit(0.9, "npc"), y = unit(1, "npc"), just = c("right", "top"))
+dev.off()
+```     
+
+### Interpretation
+
+_Lactobacillus_ (OTU1,2,80), _Howardella_, _Aerococcus_, _Dialister_, _Veillonella_, _Anaerococcus_, _Prevotella_, _Peptostreptococcus_, _Finegoldia_, _Bifidobacterium_, _Clostridium_, _Peptoniphilus_, _Gemella_, _Campylobacter_,  _Haemophilus_, _Ureaplasma_ (OTU74), and _Porphyromonas_ define the vaginal secretions whereas _Microbacterium_ (OTU10), _Cutibacterium_ (OTU9), _Enterococcus_, _Pseudomonas_, _Alloscardovia_, _Propionimicrobium_, _Fusobacterium_, _Micrococcus_, _Phascolarctobacterium_, _Brachybacterium_, _Clostridium_g6_, _Fenollaria_, _Bacteroides_, _Sneathia_, _Parvimonas_, _Mycoplasma_g4_, _Streptococcus_ (OTU 62) and _Staphyloccocus_ OTU122  are characteristic of the endometrial fluid samples (Figure \@ref(fig:sPLS-DA-heatmap-plotting)). A sample clustering according to the EF and VS sample types is observed based on the identified discriminative features (Figure \@ref(fig:sPLSDA-at-OTU-and-genus-level-plotting)).
+
+
+## Import network results
+
+```{r Network inmport,results='hide',include=TRUE,warning=FALSE,message=FALSE,cache=TRUE,dpi=dpi,fig.width=20,fig.height=27,fig.cap="Networks"}
+# TAO NF
+TAO_NF_legend <- image_read(paste("/Projects1/Kim/2020_Verstraelen/2020_Verstraelen_analysis_Kim/","Networkfigs/TAO_NF_legend.jpg",sep=""))
+image_info(TAO_NF_legend)
+TAO_NF_legend1 <- image_crop(TAO_NF_legend,"336x500+0+0")
+TAO_NF_legend1
+TAO_NF_legend2 <- image_crop(TAO_NF_legend,"336x1049+0+501")
+TAO_NF_legend2
+          
+TAO_NF <- image_read(paste("/Projects1/Kim/2020_Verstraelen/2020_Verstraelen_analysis_Kim/","Networkfigs/TAO_NF.png",sep=""))
+image_info(TAO_NF)
+TAO_NF <- image_crop(TAO_NF,"700x560+150+0")
+TAO_NF
+
+TAO_NF_tiff <- c(TAO_NF,TAO_NF_legend1,TAO_NF_legend2)
+TAO_NF_tiff <- image_append(TAO_NF_tiff)
+TAO_NF_tiff 
+TAO_NF_tiff  <-  ggdraw() +  draw_image(TAO_NF_tiff) 
+
+tiff("./Figures_Kim/Network_TAO_NF.tiff",width=10*dpi,height=8*dpi,res=dpi,compression="lzw")
+TAO_NF_tiff
+dev.off()
+
+# TAO RIF
+TAO_RIF_legend <- image_read(paste("/Projects1/Kim/2020_Verstraelen/2020_Verstraelen_analysis_Kim/","Networkfigs/TAO_RIF_legend.jpg",sep=""))
+image_info(TAO_RIF_legend)
+TAO_RIF_legend1 <- image_crop(TAO_RIF_legend,"336x544+0+0")
+TAO_RIF_legend1
+TAO_RIF_legend2 <- image_crop(TAO_RIF_legend,"336x1087+0+545")
+TAO_RIF_legend2
+          
+TAO_RIF <- image_read(paste("/Projects1/Kim/2020_Verstraelen/2020_Verstraelen_analysis_Kim/","Networkfigs/TAO_RIF.png",sep=""))
+image_info(TAO_RIF)
+TAO_RIF <- image_crop(TAO_RIF,"700x550+30+10")
+TAO_RIF
+
+TAO_RIF_tiff <- c(TAO_RIF,TAO_RIF_legend1,TAO_RIF_legend2)
+TAO_RIF_tiff <- image_append(TAO_RIF_tiff)
+TAO_RIF_tiff 
+TAO_RIF_tiff  <-  ggdraw() +  draw_image(TAO_RIF_tiff) 
+
+tiff("./Figures_Kim/Network_TAO_RIF.tiff",width=10*dpi,height=8*dpi,res=dpi,compression="lzw")
+TAO_RIF_tiff
+dev.off()
+```
+
+
+<!-- ,  _Atopobium_ and _Gardnerella_, <=> Candidatus Lachnocurva, , Corynebacterium and Megasphaera
+
+
+
+
+# Session information
+
+This analysis was run using `r sessionInfo()$R.version$version.string` on a `r sessionInfo()$platform` machine. A more detailed overview of the package versions can be found in the attached "sessionInfo.txt" file. 
+
+```{r package info,echo=FALSE,results='asis',warning=FALSE,message=FALSE}
+writeLines(capture.output(sessionInfo()), paste(fldr,"/",analysismethod,"/","sessionInfo.txt",sep=""))
+```
+
+This report is maintained on [UGent GitHub](https://github.ugent.be/LabMETNGS/AmpliMET).
+
+# References
